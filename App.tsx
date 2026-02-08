@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Image } from 'react-native';
 import { useState } from 'react';
 
 const TFL_API_BASE = 'https://api.tfl.gov.uk';
@@ -107,6 +107,11 @@ export default function App() {
       <StatusBar style="auto" />
       
       <View style={styles.header}>
+        <Image 
+          source={require('./assets/icon.png')} 
+          style={styles.logo}
+          resizeMode="contain"
+        />
         <Text style={styles.title}>IntuitJourney</Text>
         <Text style={styles.subtitle}>Plan your TfL journey</Text>
       </View>
@@ -194,6 +199,12 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     backgroundColor: '#86C2C4',
     paddingTop: 20,
+    alignItems: 'center',
+  },
+  logo: {
+    width: 60,
+    height: 60,
+    marginBottom: 10,
   },
   title: {
     fontSize: 32,
