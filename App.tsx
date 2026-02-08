@@ -186,13 +186,13 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#FEFEFE',
     paddingTop: 50,
   },
   header: {
     paddingHorizontal: 20,
     paddingBottom: 20,
-    backgroundColor: '#0019A8',
+    backgroundColor: '#86C2C4',
     paddingTop: 20,
   },
   title: {
@@ -208,22 +208,22 @@ const styles = StyleSheet.create({
   },
   searchContainer: {
     padding: 20,
-    backgroundColor: '#fff',
+    backgroundColor: '#FEFEFE',
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: '#D1C3B7',
   },
   input: {
     height: 50,
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: '#BAB4AD',
     borderRadius: 8,
     paddingHorizontal: 15,
     marginBottom: 15,
     fontSize: 16,
-    backgroundColor: '#fff',
+    backgroundColor: '#FEFEFE',
   },
   searchButton: {
-    backgroundColor: '#0019A8',
+    backgroundColor: '#86C2C4',
     height: 50,
     borderRadius: 8,
     justifyContent: 'center',
@@ -251,13 +251,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   journeyCard: {
-    backgroundColor: '#fff',
+    backgroundColor: '#FEFEFE',
     borderRadius: 12,
     padding: 15,
     marginVertical: 10,
-    shadowColor: '#000',
+    shadowColor: '#86C2C4',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 3,
   },
@@ -268,7 +268,7 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     paddingBottom: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: '#D1C3B7',
   },
   journeyTitle: {
     fontSize: 18,
@@ -278,13 +278,13 @@ const styles = StyleSheet.create({
   journeyDuration: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#0019A8',
+    color: '#86C2C4',
   },
   legContainer: {
     marginBottom: 15,
     paddingBottom: 15,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: '#D1C3B7',
   },
   legHeader: {
     flexDirection: 'row',
@@ -294,7 +294,7 @@ const styles = StyleSheet.create({
   legMode: {
     fontSize: 12,
     fontWeight: 'bold',
-    backgroundColor: '#0019A8',
+    backgroundColor: '#86C2C4',
     color: '#fff',
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -308,7 +308,7 @@ const styles = StyleSheet.create({
   },
   legInstruction: {
     fontSize: 14,
-    color: '#666',
+    color: '#BAB4AD',
     marginBottom: 8,
   },
   legPoints: {
@@ -316,12 +316,12 @@ const styles = StyleSheet.create({
   },
   pointText: {
     fontSize: 13,
-    color: '#555',
+    color: '#333',
     marginVertical: 2,
   },
   legDuration: {
     fontSize: 12,
-    color: '#999',
+    color: '#C0DDEA',
     fontStyle: 'italic',
   },
 });
