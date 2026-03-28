@@ -16,8 +16,10 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSMicrophoneUsageDescription": "IntuitJourney uses the microphone to recognise your voice for journey planning.",
-        "NSSpeechRecognitionUsageDescription": "IntuitJourney uses speech recognition to convert your voice into journey destinations."
-      }
+        "NSSpeechRecognitionUsageDescription": "IntuitJourney uses speech recognition to convert your voice into journey destinations.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.juli94.IntuitJourney"
     },
     "android": {
       "adaptiveIcon": {
@@ -26,7 +28,9 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "permissions": ["android.permission.RECORD_AUDIO"]
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
