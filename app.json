@@ -13,7 +13,11 @@
       "backgroundColor": "#FEFEFE"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "IntuitJourney uses the microphone to recognise your voice for journey planning.",
+        "NSSpeechRecognitionUsageDescription": "IntuitJourney uses speech recognition to convert your voice into journey destinations."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -21,10 +25,20 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": ["android.permission.RECORD_AUDIO"]
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "IntuitJourney uses the microphone to recognise your voice for journey planning.",
+          "speechRecognitionPermission": "IntuitJourney uses speech recognition to convert your voice into journey destinations."
+        }
+      ]
+    ]
   }
 }

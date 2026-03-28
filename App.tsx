@@ -1,6 +1,20 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Image } from 'react-native';
-import { useState } from 'react';
+import {
+  StyleSheet,
+  Text,
+  View,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  ActivityIndicator,
+  Image,
+} from 'react-native';
+import { useState, useRef } from 'react';
+import * as Speech from 'expo-speech';
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from 'expo-speech-recognition';
 
 const TFL_API_BASE = 'https://api.tfl.gov.uk';
 
@@ -32,6 +46,74 @@ export default function App() {
   const [journeys, setJourneys] = useState<Journey[]>([]);
   const [error, setError] = useState('');
 
+  const [isListening, setIsListening] = useState(false);
+  const [activeField, setActiveField] = useState<'from' | 'to' | null>(null);
+  const activeFieldRef = useRef<'from' | 'to' | null>(null);
+
+  useSpeechRecognitionEvent('start', () => setIsListening(true));
+
+  useSpeechRecognitionEvent('end', () => {
+    setIsListening(false);
+    setActiveField(null);
+    activeFieldRef.current = null;
+  });
+
+  useSpeechRecognitionEvent('result', (event) => {
+    const transcript = event.results[0]?.transcript;
+    if (transcript && activeFieldRef.current) {
+      if (activeFieldRef.current === 'from') setFrom(transcript);
+      else setTo(transcript);
+    }
+  });
+
+  useSpeechRecognitionEvent('error', (event) => {
+    console.error('Speech recognition error:', event.error, event.message);
+    setIsListening(false);
+    setActiveField(null);
+    activeFieldRef.current = null;
+  });
+
+  const startListening = async (field: 'from' | 'to') => {
+    if (isListening && activeFieldRef.current === field) {
+      ExpoSpeechRecognitionModule.stop();
+      return;
+    }
+
+    const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+    if (!granted) {
+      setError('Microphone permission is required for voice input.');
+      return;
+    }
+
+    if (isListening) ExpoSpeechRecognitionModule.stop();
+
+    setError('');
+    setActiveField(field);
+    activeFieldRef.current = field;
+
+    ExpoSpeechRecognitionModule.start({
+      lang: 'en-GB',
+      interimResults: false,
+      maxAlternatives: 1,
+    });
+  };
+
+  const speakResults = (journeyList: Journey[]) => {
+    Speech.stop();
+    if (journeyList.length === 0) {
+      Speech.speak('No journeys found. Please try different locations.', { language: 'en-GB' });
+      return;
+    }
+    const journey = journeyList[0];
+    let text = `Found ${journeyList.length} journey option${journeyList.length > 1 ? 's' : ''}. `;
+    text += `The best option takes ${formatDuration(journey.duration)}. `;
+    journey.legs.forEach((leg) => {
+      text += `${leg.instruction.summary}. `;
+    });
+    Speech.speak(text, { language: 'en-GB', rate: 0.9 });
+  };
+
+
   const searchJourney = async () => {
     if (!from.trim() || !to.trim()) {
       setError('Please enter both origin and destination');
@@ -43,21 +125,18 @@ export default function App() {
     setJourneys([]);
 
     try {
-      // First call with location names
       const firstUrl = `${TFL_API_BASE}/Journey/JourneyResults/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`;
       console.log('First call:', firstUrl);
-      
+
       const firstResponse = await fetch(firstUrl);
-      
-      // If 300 Multiple Choices, we need to extract the IDs
+
       if (firstResponse.status === 300) {
         const disambiguationData = await firstResponse.json();
         console.log('Got 300 response, extracting IDs...');
-        
-        // Extract the first ID from "from" and "to"
+
         const fromId = disambiguationData.fromLocationDisambiguation?.disambiguationOptions?.[0]?.parameterValue;
         const toId = disambiguationData.toLocationDisambiguation?.disambiguationOptions?.[0]?.parameterValue;
-        
+
         if (!fromId || !toId) {
           setError('Could not resolve station IDs. Please check station names.');
           setLoading(false);
@@ -65,28 +144,27 @@ export default function App() {
         }
 
         console.log('Resolved IDs:', fromId, toId);
-        
-        // Second call with resolved IDs
+
         const secondUrl = `${TFL_API_BASE}/Journey/JourneyResults/${fromId}/to/${toId}`;
         console.log('Second call:', secondUrl);
-        
+
         const secondResponse = await fetch(secondUrl);
-        
-        if (!secondResponse.ok) {
-          throw new Error(`API error: ${secondResponse.status}`);
-        }
-        
+        if (!secondResponse.ok) throw new Error(`API error: ${secondResponse.status}`);
+
         const data: JourneyResponse = await secondResponse.json();
-        setJourneys(data.journeys || []);
-        
+        const results = data.journeys || [];
+        setJourneys(results);
+        speakResults(results);
+
       } else if (firstResponse.ok) {
-        // If the first call was successful directly
         const data: JourneyResponse = await firstResponse.json();
-        setJourneys(data.journeys || []);
+        const results = data.journeys || [];
+        setJourneys(results);
+        speakResults(results);
       } else {
         throw new Error(`API error: ${firstResponse.status}`);
       }
-      
+
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error fetching journey');
       console.error('Journey search error:', err);
@@ -96,6 +174,13 @@ export default function App() {
   };
 
   const formatDuration = (minutes: number) => {
+    if (minutes < 60) return `${minutes} minutes`;
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hours} hour${hours > 1 ? 's' : ''} and ${mins} minutes`;
+  };
+
+  const formatDurationShort = (minutes: number) => {
     if (minutes < 60) return `${minutes}m`;
     const hours = Math.floor(minutes / 60);
     const mins = minutes % 60;
@@ -105,10 +190,10 @@ export default function App() {
   return (
     <View style={styles.container}>
       <StatusBar style="auto" />
-      
+
       <View style={styles.header}>
-        <Image 
-          source={require('./assets/icon.png')} 
+        <Image
+          source={require('./assets/icon.png')}
           style={styles.logo}
           resizeMode="contain"
         />
@@ -117,24 +202,52 @@ export default function App() {
       </View>
 
       <View style={styles.searchContainer}>
-        <TextInput
-          style={styles.input}
-          placeholder="From (e.g., Waterloo Station)"
-          value={from}
-          onChangeText={setFrom}
-          autoCapitalize="words"
-        />
-        
-        <TextInput
-          style={styles.input}
-          placeholder="To (e.g., King Cross Pancras)"
-          value={to}
-          onChangeText={setTo}
-          autoCapitalize="words"
-        />
+        <View style={styles.inputRow}>
+          <TextInput
+            style={styles.input}
+            placeholder="From (e.g., Waterloo Station)"
+            value={from}
+            onChangeText={setFrom}
+            autoCapitalize="words"
+          />
+          <TouchableOpacity
+            style={[
+              styles.micButton,
+              isListening && activeField === 'from' && styles.micButtonActive,
+            ]}
+            onPress={() => startListening('from')}
+            disabled={loading}
+          >
+            <Text style={styles.micIcon}>
+              {isListening && activeField === 'from' ? '⏹' : '🎙️'}
+            </Text>
+          </TouchableOpacity>
+        </View>
 
-        <TouchableOpacity 
-          style={styles.searchButton} 
+        <View style={styles.inputRow}>
+          <TextInput
+            style={styles.input}
+            placeholder="To (e.g., King Cross Pancras)"
+            value={to}
+            onChangeText={setTo}
+            autoCapitalize="words"
+          />
+          <TouchableOpacity
+            style={[
+              styles.micButton,
+              isListening && activeField === 'to' && styles.micButtonActive,
+            ]}
+            onPress={() => startListening('to')}
+            disabled={loading}
+          >
+            <Text style={styles.micIcon}>
+              {isListening && activeField === 'to' ? '⏹' : '🎙️'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <TouchableOpacity
+          style={styles.searchButton}
           onPress={searchJourney}
           disabled={loading}
         >
@@ -146,6 +259,14 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
+      {isListening && (
+        <View style={styles.listeningBanner}>
+          <Text style={styles.listeningText}>
+            🎙️ Listening for {activeField === 'from' ? 'origin' : 'destination'}...
+          </Text>
+        </View>
+      )}
+
       {error ? (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
@@ -153,12 +274,21 @@ export default function App() {
       ) : null}
 
       <ScrollView style={styles.resultsContainer}>
+        {journeys.length > 0 && (
+          <TouchableOpacity
+            style={styles.replayButton}
+            onPress={() => speakResults(journeys)}
+          >
+            <Text style={styles.replayButtonText}>🔊 Replay Results</Text>
+          </TouchableOpacity>
+        )}
+
         {journeys.map((journey, idx) => (
           <View key={idx} style={styles.journeyCard}>
             <View style={styles.journeyHeader}>
               <Text style={styles.journeyTitle}>Option {idx + 1}</Text>
               <Text style={styles.journeyDuration}>
-                {formatDuration(journey.duration)}
+                {formatDurationShort(journey.duration)}
               </Text>
             </View>
 
@@ -170,15 +300,15 @@ export default function App() {
                     <Text style={styles.legRoute}>{leg.routeOptions[0].name}</Text>
                   )}
                 </View>
-                
+
                 <Text style={styles.legInstruction}>{leg.instruction.summary}</Text>
-                
+
                 <View style={styles.legPoints}>
                   <Text style={styles.pointText}>📍 {leg.departurePoint.commonName}</Text>
                   <Text style={styles.pointText}>📍 {leg.arrivalPoint.commonName}</Text>
                 </View>
-                
-                <Text style={styles.legDuration}>{formatDuration(leg.duration)}</Text>
+
+                <Text style={styles.legDuration}>{formatDurationShort(leg.duration)}</Text>
               </View>
             ))}
           </View>
@@ -223,15 +353,35 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#D1C3B7',
   },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 15,
+  },
   input: {
+    flex: 1,
     height: 50,
     borderWidth: 1,
     borderColor: '#BAB4AD',
     borderRadius: 8,
     paddingHorizontal: 15,
-    marginBottom: 15,
     fontSize: 16,
     backgroundColor: '#FEFEFE',
+  },
+  micButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 8,
+    backgroundColor: '#86C2C4',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 10,
+  },
+  micButtonActive: {
+    backgroundColor: '#e74c3c',
+  },
+  micIcon: {
+    fontSize: 22,
   },
   searchButton: {
     backgroundColor: '#86C2C4',
@@ -243,6 +393,32 @@ const styles = StyleSheet.create({
   searchButtonText: {
     color: '#fff',
     fontSize: 18,
+    fontWeight: '600',
+  },
+  listeningBanner: {
+    backgroundColor: '#fff3cd',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#ffc107',
+  },
+  listeningText: {
+    color: '#856404',
+    fontSize: 14,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  replayButton: {
+    backgroundColor: '#86C2C4',
+    borderRadius: 8,
+    padding: 12,
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 5,
+  },
+  replayButtonText: {
+    color: '#fff',
+    fontSize: 15,
     fontWeight: '600',
   },
   errorContainer: {
