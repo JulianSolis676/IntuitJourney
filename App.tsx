@@ -3,13 +3,12 @@ import {
   StyleSheet,
   Text,
   View,
-  TextInput,
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
   Image,
 } from 'react-native';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import * as Speech from 'expo-speech';
 import {
   ExpoSpeechRecognitionModule,
@@ -17,6 +16,20 @@ import {
 } from 'expo-speech-recognition';
 
 const TFL_API_BASE = 'https://api.tfl.gov.uk';
+
+// Conversation states
+type ConversationState = 
+  | 'idle'                    // App just opened, not started yet
+  | 'greeting'                // Speaking greeting
+  | 'asking_origin'           // Asking "Where are you?"
+  | 'listening_origin'        // Listening for origin
+  | 'confirming_origin'       // Confirming origin
+  | 'asking_destination'      // Asking "Where do you want to go?"
+  | 'listening_destination'   // Listening for destination
+  | 'confirming_destination'  // Confirming destination
+  | 'searching'               // Searching journey
+  | 'results'                 // Showing results
+  | 'error';                  // Showing error
 
 interface JourneyLeg {
   mode: { id: string };
@@ -46,55 +59,108 @@ export default function App() {
   const [journeys, setJourneys] = useState<Journey[]>([]);
   const [error, setError] = useState('');
 
+  // Voice-first conversation state
+  const [conversationState, setConversationState] = useState<ConversationState>('idle');
+  const [statusMessage, setStatusMessage] = useState('Welcome to IntuitJourney');
+  
   const [isListening, setIsListening] = useState(false);
-  const [activeField, setActiveField] = useState<'from' | 'to' | null>(null);
-  const activeFieldRef = useRef<'from' | 'to' | null>(null);
+  const isListeningRef = useRef(false);
+  const conversationStateRef = useRef<ConversationState>('idle');
+  
+  // Keep refs in sync
+  useEffect(() => {
+    isListeningRef.current = isListening;
+  }, [isListening]);
+  
+  useEffect(() => {
+    conversationStateRef.current = conversationState;
+  }, [conversationState]);
 
-  useSpeechRecognitionEvent('start', () => setIsListening(true));
+  // Start conversation on app mount
+  useEffect(() => {
+    startConversation();
+  }, []);
 
-  useSpeechRecognitionEvent('end', () => {
-    setIsListening(false);
-    setActiveField(null);
-    activeFieldRef.current = null;
-  });
-
-  useSpeechRecognitionEvent('result', (event) => {
-    const transcript = event.results[0]?.transcript;
-    if (transcript && activeFieldRef.current) {
-      if (activeFieldRef.current === 'from') setFrom(transcript);
-      else setTo(transcript);
-    }
-  });
-
-  useSpeechRecognitionEvent('error', (event) => {
-    console.error('Speech recognition error:', event.error, event.message);
-    setIsListening(false);
-    setActiveField(null);
-    activeFieldRef.current = null;
-  });
-
-  const startListening = async (field: 'from' | 'to') => {
-    if (isListening && activeFieldRef.current === field) {
-      ExpoSpeechRecognitionModule.stop();
-      return;
-    }
-
+  const startConversation = async () => {
+    // Request permissions first
     const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
     if (!granted) {
       setError('Microphone permission is required for voice input.');
+      setConversationState('error');
       return;
     }
 
-    if (isListening) ExpoSpeechRecognitionModule.stop();
+    // Start greeting
+    setConversationState('greeting');
+    setStatusMessage('Greeting...');
+    
+    Speech.speak('Hello! Welcome to IntuitJourney. Your voice-first travel assistant.', {
+      language: 'en-GB',
+      rate: 0.9,
+      onDone: () => {
+        askForOrigin();
+      },
+    });
+  };
 
-    setError('');
-    setActiveField(field);
-    activeFieldRef.current = field;
+  const askForOrigin = () => {
+    setConversationState('asking_origin');
+    setStatusMessage('Asking for origin...');
+    
+    Speech.speak('Where are you? Please say your current location.', {
+      language: 'en-GB',
+      rate: 0.9,
+      onDone: () => {
+        startListeningForOrigin();
+      },
+    });
+  };
 
+  const startListeningForOrigin = () => {
+    setConversationState('listening_origin');
+    setStatusMessage('Listening for your location...');
+    
     ExpoSpeechRecognitionModule.start({
       lang: 'en-GB',
       interimResults: false,
       maxAlternatives: 1,
+    });
+  };
+
+  const askForDestination = () => {
+    setConversationState('asking_destination');
+    setStatusMessage('Asking for destination...');
+    
+    Speech.speak(`You are at ${from}. Where do you want to go?`, {
+      language: 'en-GB',
+      rate: 0.9,
+      onDone: () => {
+        startListeningForDestination();
+      },
+    });
+  };
+
+  const startListeningForDestination = () => {
+    setConversationState('listening_destination');
+    setStatusMessage('Listening for your destination...');
+    
+    ExpoSpeechRecognitionModule.start({
+      lang: 'en-GB',
+      interimResults: false,
+      maxAlternatives: 1,
+    });
+  };
+
+  const confirmAndSearch = () => {
+    setConversationState('confirming_destination');
+    setStatusMessage('Confirming and searching...');
+    
+    Speech.speak(`Going to ${to}. Let me find your journey.`, {
+      language: 'en-GB',
+      rate: 0.9,
+      onDone: () => {
+        searchJourney();
+      },
     });
   };
 
@@ -113,14 +179,75 @@ export default function App() {
     Speech.speak(text, { language: 'en-GB', rate: 0.9 });
   };
 
+  // Speech recognition event handlers
+  useSpeechRecognitionEvent('start', () => {
+    setIsListening(true);
+  });
+
+  useSpeechRecognitionEvent('end', () => {
+    setIsListening(false);
+    
+    // Handle state transition based on current conversation state
+    const currentState = conversationStateRef.current;
+    
+    if (currentState === 'listening_origin') {
+      // Finished listening for origin, ask for destination
+      if (from.trim()) {
+        askForDestination();
+      } else {
+        // No input received, ask again
+        askForOrigin();
+      }
+    } else if (currentState === 'listening_destination') {
+      // Finished listening for destination, search journey
+      if (to.trim()) {
+        confirmAndSearch();
+      } else {
+        // No input received, ask again
+        askForDestination();
+      }
+    }
+  });
+
+  useSpeechRecognitionEvent('result', (event) => {
+    const transcript = event.results[0]?.transcript;
+    if (!transcript) return;
+    
+    const currentState = conversationStateRef.current;
+    
+    if (currentState === 'listening_origin') {
+      setFrom(transcript);
+    } else if (currentState === 'listening_destination') {
+      setTo(transcript);
+    }
+  });
+
+  useSpeechRecognitionEvent('error', (event) => {
+    console.error('Speech recognition error:', event.error, event.message);
+    setIsListening(false);
+    
+    const currentState = conversationStateRef.current;
+    
+    if (currentState === 'listening_origin') {
+      // Try again for origin
+      askForOrigin();
+    } else if (currentState === 'listening_destination') {
+      // Try again for destination
+      askForDestination();
+    }
+  });
+
 
   const searchJourney = async () => {
     if (!from.trim() || !to.trim()) {
       setError('Please enter both origin and destination');
+      setConversationState('error');
       return;
     }
 
     setLoading(true);
+    setConversationState('searching');
+    setStatusMessage('Searching for journeys...');
     setError('');
     setJourneys([]);
 
@@ -140,6 +267,7 @@ export default function App() {
         if (!fromId || !toId) {
           setError('Could not resolve station IDs. Please check station names.');
           setLoading(false);
+          setConversationState('error');
           return;
         }
 
@@ -154,12 +282,16 @@ export default function App() {
         const data: JourneyResponse = await secondResponse.json();
         const results = data.journeys || [];
         setJourneys(results);
+        setConversationState('results');
+        setStatusMessage('Journey found!');
         speakResults(results);
 
       } else if (firstResponse.ok) {
         const data: JourneyResponse = await firstResponse.json();
         const results = data.journeys || [];
         setJourneys(results);
+        setConversationState('results');
+        setStatusMessage('Journey found!');
         speakResults(results);
       } else {
         throw new Error(`API error: ${firstResponse.status}`);
@@ -167,10 +299,21 @@ export default function App() {
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error fetching journey');
+      setConversationState('error');
+      setStatusMessage('Error finding journey');
       console.error('Journey search error:', err);
     } finally {
       setLoading(false);
     }
+  };
+
+  // Allow user to start a new search
+  const startNewSearch = () => {
+    setFrom('');
+    setTo('');
+    setJourneys([]);
+    setError('');
+    askForOrigin();
   };
 
   const formatDuration = (minutes: number) => {
@@ -187,6 +330,34 @@ export default function App() {
     return `${hours}h ${mins}m`;
   };
 
+  // Get status message based on conversation state
+  const getStatusDisplay = () => {
+    switch (conversationState) {
+      case 'greeting':
+        return '👋 Saying hello...';
+      case 'asking_origin':
+        return '📍 Asking "Where are you?"';
+      case 'listening_origin':
+        return '🎙️ Listening for your location...';
+      case 'confirming_origin':
+        return '✅ Confirming your location';
+      case 'asking_destination':
+        return '📍 Asking "Where do you want to go?"';
+      case 'listening_destination':
+        return '🎙️ Listening for your destination...';
+      case 'confirming_destination':
+        return '✅ Confirming destination';
+      case 'searching':
+        return '🔍 Searching for journeys...';
+      case 'results':
+        return '✅ Journey found!';
+      case 'error':
+        return '❌ Error occurred';
+      default:
+        return statusMessage;
+    }
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar style="auto" />
@@ -198,91 +369,62 @@ export default function App() {
           resizeMode="contain"
         />
         <Text style={styles.title}>IntuitJourney</Text>
-        <Text style={styles.subtitle}>Plan your TfL journey</Text>
+        <Text style={styles.subtitle}>Voice-first travel assistant</Text>
       </View>
 
-      <View style={styles.searchContainer}>
-        <View style={styles.inputRow}>
-          <TextInput
-            style={styles.input}
-            placeholder="From (e.g., Waterloo Station)"
-            value={from}
-            onChangeText={setFrom}
-            autoCapitalize="words"
-          />
-          <TouchableOpacity
-            style={[
-              styles.micButton,
-              isListening && activeField === 'from' && styles.micButtonActive,
-            ]}
-            onPress={() => startListening('from')}
-            disabled={loading}
-          >
-            <Text style={styles.micIcon}>
-              {isListening && activeField === 'from' ? '⏹' : '🎙️'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.inputRow}>
-          <TextInput
-            style={styles.input}
-            placeholder="To (e.g., King Cross Pancras)"
-            value={to}
-            onChangeText={setTo}
-            autoCapitalize="words"
-          />
-          <TouchableOpacity
-            style={[
-              styles.micButton,
-              isListening && activeField === 'to' && styles.micButtonActive,
-            ]}
-            onPress={() => startListening('to')}
-            disabled={loading}
-          >
-            <Text style={styles.micIcon}>
-              {isListening && activeField === 'to' ? '⏹' : '🎙️'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <TouchableOpacity
-          style={styles.searchButton}
-          onPress={searchJourney}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.searchButtonText}>Search Journey</Text>
-          )}
-        </TouchableOpacity>
+      {/* Status indicator */}
+      <View style={styles.statusContainer}>
+        <Text style={styles.statusText}>{getStatusDisplay()}</Text>
       </View>
 
+      {/* Listening indicator */}
       {isListening && (
         <View style={styles.listeningBanner}>
-          <Text style={styles.listeningText}>
-            🎙️ Listening for {activeField === 'from' ? 'origin' : 'destination'}...
-          </Text>
+          <Text style={styles.listeningText}>🎙️ Speak now...</Text>
         </View>
       )}
 
+      {/* Error display */}
       {error ? (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={startNewSearch}>
+            <Text style={styles.retryButtonText}>Try Again</Text>
+          </TouchableOpacity>
         </View>
       ) : null}
 
+      {/* Journey results - shown visually for accessibility helpers */}
       <ScrollView style={styles.resultsContainer}>
+        {/* Current input display */}
+        {(from || to) && (
+          <View style={styles.inputDisplay}>
+            {from && (
+              <View style={styles.inputDisplayRow}>
+                <Text style={styles.inputLabel}>From:</Text>
+                <Text style={styles.inputValue}>{from}</Text>
+              </View>
+            )}
+            {to && (
+              <View style={styles.inputDisplayRow}>
+                <Text style={styles.inputLabel}>To:</Text>
+                <Text style={styles.inputValue}>{to}</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* Replay button */}
         {journeys.length > 0 && (
           <TouchableOpacity
             style={styles.replayButton}
             onPress={() => speakResults(journeys)}
           >
-            <Text style={styles.replayButtonText}>🔊 Replay Results</Text>
+            <Text style={styles.replayButtonText}>🔊 Replay Journey</Text>
           </TouchableOpacity>
         )}
 
+        {/* Journey cards */}
         {journeys.map((journey, idx) => (
           <View key={idx} style={styles.journeyCard}>
             <View style={styles.journeyHeader}>
@@ -347,64 +489,52 @@ const styles = StyleSheet.create({
     opacity: 0.9,
     marginTop: 5,
   },
-  searchContainer: {
+  // Voice-first status display
+  statusContainer: {
     padding: 20,
-    backgroundColor: '#FEFEFE',
+    backgroundColor: '#E8F4F5',
     borderBottomWidth: 1,
     borderBottomColor: '#D1C3B7',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 15,
-  },
-  input: {
-    flex: 1,
-    height: 50,
-    borderWidth: 1,
-    borderColor: '#BAB4AD',
-    borderRadius: 8,
-    paddingHorizontal: 15,
-    fontSize: 16,
-    backgroundColor: '#FEFEFE',
-  },
-  micButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 8,
-    backgroundColor: '#86C2C4',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 10,
-  },
-  micButtonActive: {
-    backgroundColor: '#e74c3c',
-  },
-  micIcon: {
-    fontSize: 22,
-  },
-  searchButton: {
-    backgroundColor: '#86C2C4',
-    height: 50,
-    borderRadius: 8,
-    justifyContent: 'center',
     alignItems: 'center',
   },
-  searchButtonText: {
-    color: '#fff',
+  statusText: {
     fontSize: 18,
-    fontWeight: '600',
+    color: '#2C3E50',
+    fontWeight: '500',
+    textAlign: 'center',
   },
+  // Input display (for visual confirmation)
+  inputDisplay: {
+    padding: 15,
+    backgroundColor: '#F8F8F8',
+    marginBottom: 10,
+  },
+  inputDisplayRow: {
+    flexDirection: 'row',
+    marginBottom: 5,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+    width: 50,
+  },
+  inputValue: {
+    fontSize: 14,
+    color: '#333',
+    flex: 1,
+  },
+  // Listening indicator
   listeningBanner: {
     backgroundColor: '#fff3cd',
-    paddingVertical: 10,
+    paddingVertical: 15,
     paddingHorizontal: 20,
     borderBottomWidth: 1,
     borderBottomColor: '#ffc107',
   },
   listeningText: {
     color: '#856404',
-    fontSize: 14,
+    fontSize: 16,
     textAlign: 'center',
     fontWeight: '500',
   },
@@ -432,6 +562,19 @@ const styles = StyleSheet.create({
   errorText: {
     color: '#c62828',
     fontSize: 14,
+    marginBottom: 10,
+  },
+  retryButton: {
+    backgroundColor: '#86C2C4',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   resultsContainer: {
     flex: 1,
