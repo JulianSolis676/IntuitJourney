@@ -17,9 +17,12 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "IntuitJourney uses the microphone to recognise your voice for journey planning.",
         "NSSpeechRecognitionUsageDescription": "IntuitJourney uses speech recognition to convert your voice into journey destinations.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": []
       },
-      "bundleIdentifier": "com.juli94.IntuitJourney"
+      "bundleIdentifier": "com.juli94.IntuitJourney",
+      "buildNumber": "1",
+      "appleTeamId": "34XJJR33PM"
     },
     "android": {
       "adaptiveIcon": {
@@ -30,7 +33,8 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.RECORD_AUDIO"
-      ]
+      ],
+      "package": "com.juli94.IntuitJourney"
     },
     "web": {
       "favicon": "./assets/favicon.png"

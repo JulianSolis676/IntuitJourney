@@ -7,6 +7,8 @@ import {
   ScrollView,
   ActivityIndicator,
   Image,
+  Animated,
+  Platform,
 } from 'react-native';
 import { useState, useRef, useEffect } from 'react';
 import * as Speech from 'expo-speech';
@@ -19,6 +21,7 @@ const TFL_API_BASE = 'https://api.tfl.gov.uk';
 
 // Conversation states
 type ConversationState = 
+  | 'splash'                  // Initial splash screen
   | 'idle'                    // App just opened, not started yet
   | 'greeting'                // Speaking greeting
   | 'asking_origin'           // Asking "Where are you?"
@@ -29,6 +32,10 @@ type ConversationState =
   | 'confirming_destination'  // Confirming destination
   | 'searching'               // Searching journey
   | 'results'                 // Showing results
+  | 'asking_repeat'           // Asking if user wants to repeat results
+  | 'listening_repeat'        // Listening for repeat confirmation
+  | 'asking_retry'            // Asking if user wants to retry after error
+  | 'listening_retry'         // Listening for retry confirmation
   | 'error';                  // Showing error
 
 interface JourneyLeg {
@@ -60,12 +67,25 @@ export default function App() {
   const [error, setError] = useState('');
 
   // Voice-first conversation state
-  const [conversationState, setConversationState] = useState<ConversationState>('idle');
+  const [conversationState, setConversationState] = useState<ConversationState>('splash');
   const [statusMessage, setStatusMessage] = useState('Welcome to IntuitJourney');
   
   const [isListening, setIsListening] = useState(false);
   const isListeningRef = useRef(false);
-  const conversationStateRef = useRef<ConversationState>('idle');
+  const conversationStateRef = useRef<ConversationState>('splash');
+  
+  // Refs for immediate access to from/to values (fix async state issue)
+  const fromRef = useRef('');
+  const toRef = useRef('');
+  
+  // Prevent duplicate calls and infinite loops
+  const isProcessingError = useRef(false);
+  const retryCount = useRef(0);
+  const maxRetries = 2; // Max 2 attempts before offering to restart
+  
+  // Animation for splash and listening
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef(new Animated.Value(1)).current;
   
   // Keep refs in sync
   useEffect(() => {
@@ -75,91 +95,310 @@ export default function App() {
   useEffect(() => {
     conversationStateRef.current = conversationState;
   }, [conversationState]);
-
-  // Start conversation on app mount
+  
   useEffect(() => {
-    startConversation();
+    fromRef.current = from;
+  }, [from]);
+  
+  useEffect(() => {
+    toRef.current = to;
+  }, [to]);
+
+  // Test audio system and start with splash screen
+  useEffect(() => {
+    console.log('🔧 App mounted, testing audio system...');
+    
+    // Test if Speech.speak works at all
+    Speech.speak('Test', {
+      language: 'es-ES',
+      volume: 1.0,
+      rate: 0.9,
+      onStart: () => {
+        console.log('✅ Audio system is working!');
+      },
+      onDone: () => {
+        console.log('✅ Audio test complete');
+      },
+      onError: (error) => {
+        console.error('❌ Audio test failed:', error);
+      },
+    });
+    
+    // Start splash screen immediately
+    showSplashScreen();
   }, []);
 
-  const startConversation = async () => {
-    // Request permissions first
-    const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-    if (!granted) {
-      setError('Microphone permission is required for voice input.');
-      setConversationState('error');
-      return;
+  // Pulse animation for listening state
+  useEffect(() => {
+    if (isListening) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.2,
+            duration: 800,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 800,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      pulseAnim.setValue(1);
     }
+  }, [isListening]);
 
-    // Start greeting
-    setConversationState('greeting');
-    setStatusMessage('Greeting...');
-    
-    Speech.speak('Hello! Welcome to IntuitJourney. Your voice-first travel assistant.', {
-      language: 'en-GB',
-      rate: 0.9,
-      onDone: () => {
-        askForOrigin();
-      },
+  const showSplashScreen = () => {
+    console.log('🎬 Showing splash screen');
+    setConversationState('splash');
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 1000,
+      useNativeDriver: true,
+    }).start(() => {
+      // After 2.5 seconds, transition to main app
+      setTimeout(() => {
+        console.log('⏱️ Splash timeout, fading out');
+        Animated.timing(fadeAnim, {
+          toValue: 0,
+          duration: 800,
+          useNativeDriver: true,
+        }).start(() => {
+          console.log('✅ Splash done, starting conversation');
+          startConversation();
+        });
+      }, 2500);
     });
   };
 
-  const askForOrigin = () => {
-    setConversationState('asking_origin');
-    setStatusMessage('Asking for origin...');
+  const startConversation = async () => {
+    console.log('🎤 Starting conversation, requesting permissions...');
     
-    Speech.speak('Where are you? Please say your current location.', {
+    // Stop any previous speech
+    Speech.stop();
+    
+    // Request permissions first
+    try {
+      const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      console.log('🔒 Permissions granted:', granted);
+      
+      if (!granted) {
+        setError('Microphone permission is required to use this app.');
+        setConversationState('error');
+        console.log('🔊 Speaking error message...');
+        Speech.stop();
+        Speech.speak('Microphone permission is required to use this app.', {
+          language: 'en-GB',
+          rate: 0.9,
+          volume: 1.0,
+        });
+        return;
+      }
+
+      // Start greeting
+      console.log('👋 Starting greeting...');
+      setConversationState('greeting');
+      setStatusMessage('Greeting...');
+      
+      console.log('🔊 About to speak greeting...');
+      
+      // Wait a moment to ensure audio system is ready
+      setTimeout(() => {
+        Speech.stop();
+        Speech.speak('Hello! Welcome to Intuit Journey. Your voice-activated travel assistant.', {
+          language: 'en-GB',
+          rate: 0.85, // Slightly slower for clarity
+          volume: 1.0,
+          pitch: 1.0,
+          onStart: () => {
+            console.log('🗣️ Speech started!');
+          },
+          onDone: () => {
+            console.log('✅ Greeting speech done');
+            askForOrigin();
+          },
+          onError: (error) => {
+            console.error('❌ Speech error:', error);
+          },
+        });
+      }, 500);
+    } catch (error) {
+      console.error('❌ Error in startConversation:', error);
+      setError('Error starting the application');
+      setConversationState('error');
+    }
+  };
+
+  const closeApp = () => {
+    console.log('🚪 Closing application');
+    setConversationState('idle');
+    setStatusMessage('Application closed');
+    setError('');
+    setFrom('');
+    setTo('');
+    fromRef.current = '';
+    toRef.current = '';
+    retryCount.current = 0;
+    isProcessingError.current = false;
+    setJourneys([]);
+    setIsListening(false);
+    
+    // Note: iOS doesn't allow apps to close themselves programmatically
+    // The app will remain in an idle state and user can close manually
+    // or reopen the app to start a new session
+  };
+
+  const askForOrigin = () => {
+    console.log('📍 Asking for origin...');
+    setConversationState('asking_origin');
+    setStatusMessage('Asking where you are...');
+    
+    console.log('🔊 About to speak origin question...');
+    // Stop any ongoing speech first
+    Speech.stop();
+    
+    Speech.speak('Where would you like to depart from?', {
       language: 'en-GB',
       rate: 0.9,
+      volume: 1.0,
+      onStart: () => {
+        console.log('🗣️ Origin question speech started!');
+      },
       onDone: () => {
+        console.log('✅ Origin question speech done, starting to listen');
         startListeningForOrigin();
+      },
+      onError: (error) => {
+        console.error('❌ Origin speech error:', error);
       },
     });
   };
 
   const startListeningForOrigin = () => {
+    console.log('👂 Starting to listen for origin...');
     setConversationState('listening_origin');
     setStatusMessage('Listening for your location...');
     
-    ExpoSpeechRecognitionModule.start({
-      lang: 'en-GB',
-      interimResults: false,
-      maxAlternatives: 1,
-    });
+    // Reset error processing flag
+    isProcessingError.current = false;
+    
+    try {
+      ExpoSpeechRecognitionModule.start({
+        lang: 'en-GB',
+        interimResults: false,
+        maxAlternatives: 1,
+      });
+      console.log('✅ Speech recognition started for origin');
+    } catch (error) {
+      console.error('❌ Error starting speech recognition:', error);
+    }
   };
 
   const askForDestination = () => {
+    console.log('🎯 Asking for destination...');
     setConversationState('asking_destination');
-    setStatusMessage('Asking for destination...');
+    setStatusMessage('Asking where you want to go...');
     
-    Speech.speak(`You are at ${from}. Where do you want to go?`, {
+    console.log('🔊 About to speak destination question...');
+    // Stop any ongoing speech first
+    Speech.stop();
+    
+    Speech.speak('Where would you like to go?', {
       language: 'en-GB',
       rate: 0.9,
+      volume: 1.0,
+      onStart: () => {
+        console.log('🗣️ Destination question speech started!');
+      },
       onDone: () => {
+        console.log('✅ Destination question speech done, starting to listen');
         startListeningForDestination();
+      },
+      onError: (error) => {
+        console.error('❌ Destination speech error:', error);
       },
     });
   };
 
   const startListeningForDestination = () => {
+    console.log('👂 Starting to listen for destination...');
     setConversationState('listening_destination');
     setStatusMessage('Listening for your destination...');
     
-    ExpoSpeechRecognitionModule.start({
-      lang: 'en-GB',
-      interimResults: false,
-      maxAlternatives: 1,
-    });
+    // Reset error processing flag
+    isProcessingError.current = false;
+    
+    try {
+      ExpoSpeechRecognitionModule.start({
+        lang: 'en-GB',
+        interimResults: false,
+        maxAlternatives: 1,
+      });
+      console.log('✅ Speech recognition started for destination');
+    } catch (error) {
+      console.error('❌ Error starting speech recognition:', error);
+    }
   };
 
   const confirmAndSearch = () => {
+    console.log('🔍 confirmAndSearch() called');
+    console.log('📌 From:', from, '| To:', to);
+    console.log('📌 FromRef:', fromRef.current, '| ToRef:', toRef.current);
+    
+    // Use refs for immediate values
+    const fromValue = fromRef.current.trim().toLowerCase();
+    const toValue = toRef.current.trim().toLowerCase();
+    
+    // Check if origin and destination are the same
+    if (fromValue === toValue) {
+      console.log('⚠️ Origin and destination are the same');
+      setConversationState('error');
+      Speech.stop();
+      Speech.speak('The origin and destination are the same. I cannot search for routes. Let me ask you again.', {
+        language: 'en-GB',
+        rate: 0.9,
+        volume: 1.0,
+        onStart: () => {
+          console.log('🗣️ Speaking same location error...');
+        },
+        onDone: () => {
+          console.log('✅ Restarting questions');
+          // Reset and start over
+          setFrom('');
+          setTo('');
+          fromRef.current = '';
+          toRef.current = '';
+          retryCount.current = 0;
+          setTimeout(() => {
+            askForOrigin();
+          }, 500);
+        },
+        onError: (error) => {
+          console.error('❌ Error speaking same location error:', error);
+        },
+      });
+      return;
+    }
+    
     setConversationState('confirming_destination');
     setStatusMessage('Confirming and searching...');
     
-    Speech.speak(`Going to ${to}. Let me find your journey.`, {
+    Speech.stop();
+    Speech.speak(`Perfect. Searching for your route from ${fromRef.current} to ${toRef.current}.`, {
       language: 'en-GB',
       rate: 0.9,
+      volume: 1.0,
+      onStart: () => {
+        console.log('🗣️ Speaking confirmation...');
+      },
       onDone: () => {
+        console.log('✅ Confirmation done, calling searchJourney()');
         searchJourney();
+      },
+      onError: (error) => {
+        console.error('❌ Error speaking confirmation:', error);
       },
     });
   };
@@ -167,92 +406,315 @@ export default function App() {
   const speakResults = (journeyList: Journey[]) => {
     Speech.stop();
     if (journeyList.length === 0) {
-      Speech.speak('No journeys found. Please try different locations.', { language: 'en-GB' });
+      Speech.speak('No routes were found. Please try with different locations.', { 
+        language: 'en-GB',
+        volume: 1.0,
+        rate: 0.9,
+      });
       return;
     }
     const journey = journeyList[0];
-    let text = `Found ${journeyList.length} journey option${journeyList.length > 1 ? 's' : ''}. `;
+    let text = `I found ${journeyList.length} travel ${journeyList.length > 1 ? 'options' : 'option'}. `;
     text += `The best option takes ${formatDuration(journey.duration)}. `;
     journey.legs.forEach((leg) => {
       text += `${leg.instruction.summary}. `;
     });
-    Speech.speak(text, { language: 'en-GB', rate: 0.9 });
+    Speech.speak(text, { 
+      language: 'en-GB',
+      rate: 0.9,
+      volume: 1.0,
+      onDone: () => {
+        askToRepeatResults();
+      },
+    });
+  };
+
+  const askToRepeatResults = () => {
+    setConversationState('asking_repeat');
+    setStatusMessage('Asking if you want to repeat...');
+    
+    Speech.stop();
+    Speech.speak('Would you like me to repeat the results?', {
+      language: 'en-GB',
+      rate: 0.9,
+      volume: 1.0,
+      onDone: () => {
+        startListeningForRepeat();
+      },
+    });
+  };
+
+  const startListeningForRepeat = () => {
+    setConversationState('listening_repeat');
+    setStatusMessage('Listening for your answer...');
+    
+    // Reset error processing flag
+    isProcessingError.current = false;
+    
+    ExpoSpeechRecognitionModule.start({
+      lang: 'en-GB',
+      interimResults: false,
+      maxAlternatives: 1,
+    });
   };
 
   // Speech recognition event handlers
   useSpeechRecognitionEvent('start', () => {
+    console.log('🎤 Speech recognition started event');
     setIsListening(true);
   });
 
   useSpeechRecognitionEvent('end', () => {
+    console.log('🎤 Speech recognition ended event');
     setIsListening(false);
+    
+    // If we're already processing an error, don't do anything here
+    if (isProcessingError.current) {
+      console.log('⏭️ Skipping end handler - error already being processed');
+      return;
+    }
     
     // Handle state transition based on current conversation state
     const currentState = conversationStateRef.current;
+    console.log('📊 Current state on end:', currentState);
     
     if (currentState === 'listening_origin') {
+      // Use REF for immediate access
+      const fromValue = fromRef.current;
+      console.log('📝 From value (ref):', fromValue);
       // Finished listening for origin, ask for destination
-      if (from.trim()) {
+      if (fromValue && fromValue.trim()) {
+        console.log('✅ Origin captured, calling askForDestination()');
+        retryCount.current = 0; // Reset on success
         askForDestination();
       } else {
-        // No input received, ask again
-        askForOrigin();
+        console.log('⚠️ No origin value, waiting for error handler');
       }
+      // If no input, wait for error handler
     } else if (currentState === 'listening_destination') {
+      // Use REF for immediate access
+      const toValue = toRef.current;
+      console.log('📝 To value (ref):', toValue);
       // Finished listening for destination, search journey
-      if (to.trim()) {
+      if (toValue && toValue.trim()) {
+        console.log('✅ Destination captured, calling confirmAndSearch()');
+        retryCount.current = 0; // Reset on success
         confirmAndSearch();
       } else {
-        // No input received, ask again
-        askForDestination();
+        console.log('⚠️ No destination value, waiting for error handler');
       }
+      // If no input, wait for error handler
+    } else if (currentState === 'listening_repeat') {
+      console.log('🔄 Finished listening for repeat answer');
+      // User responded to repeat question - handled in result event
+    } else if (currentState === 'listening_retry') {
+      console.log('🔄 Finished listening for retry answer');
+      // User responded to retry question - handled in result event
     }
   });
 
   useSpeechRecognitionEvent('result', (event) => {
     const transcript = event.results[0]?.transcript;
+    console.log('📝 Speech result:', transcript);
     if (!transcript) return;
     
     const currentState = conversationStateRef.current;
+    console.log('📊 Current state on result:', currentState);
     
     if (currentState === 'listening_origin') {
+      console.log('✅ Setting origin to:', transcript);
+      // Reset retry count on successful speech capture
+      retryCount.current = 0;
       setFrom(transcript);
+      fromRef.current = transcript; // Update ref immediately
     } else if (currentState === 'listening_destination') {
+      console.log('✅ Setting destination to:', transcript);
+      // Reset retry count on successful speech capture
+      retryCount.current = 0;
       setTo(transcript);
+      toRef.current = transcript; // Update ref immediately
+    } else if (currentState === 'listening_repeat') {
+      // Reset retry count on successful speech capture
+      retryCount.current = 0;
+      // Check if user wants to repeat
+      const response = transcript.toLowerCase();
+      if (response.includes('yes') || response.includes('yeah') || response.includes('sure') || response.includes('ok')) {
+        setConversationState('results');
+        speakResults(journeys);
+      } else {
+        Speech.speak('Thank you for using Intuit Journey. Goodbye.', {
+          language: 'en-GB',
+          rate: 0.9,
+          volume: 1.0,
+          onDone: () => {
+            setConversationState('idle');
+          },
+        });
+      }
+    } else if (currentState === 'listening_retry') {
+      // Reset retry count on successful speech capture
+      retryCount.current = 0;
+      // Check if user wants to retry
+      const response = transcript.toLowerCase();
+      if (response.includes('yes') || response.includes('yeah') || response.includes('sure') || response.includes('ok')) {
+        startNewSearch();
+      } else {
+        Speech.speak('Thank you for using Intuit Journey. Goodbye.', {
+          language: 'en-GB',
+          rate: 0.9,
+          volume: 1.0,
+        });
+        setConversationState('idle');
+      }
     }
   });
 
   useSpeechRecognitionEvent('error', (event) => {
-    console.error('Speech recognition error:', event.error, event.message);
+    // Don't show error overlay for 'no-speech' since we handle it gracefully with voice
+    if (event.error === 'no-speech') {
+      console.log('⚠️ No speech detected (expected behavior)');
+    } else {
+      console.error('❌ Speech recognition error:', event.error, event.message);
+    }
+    
     setIsListening(false);
     
-    const currentState = conversationStateRef.current;
+    // Mark that we're processing an error to prevent duplicate handling
+    isProcessingError.current = true;
     
-    if (currentState === 'listening_origin') {
-      // Try again for origin
-      askForOrigin();
-    } else if (currentState === 'listening_destination') {
-      // Try again for destination
-      askForDestination();
+    const currentState = conversationStateRef.current;
+    console.log('📊 Current state on error:', currentState);
+    console.log('🔢 Retry count BEFORE increment:', retryCount.current);
+    
+    // Increment retry count
+    retryCount.current += 1;
+    console.log('🔢 Retry count AFTER increment:', retryCount.current);
+    
+    // Stop any ongoing speech
+    Speech.stop();
+    
+    // Handle specific error types
+    if (event.error === 'no-speech') {
+      
+      // Check if we've exceeded max retries (2 attempts)
+      if (retryCount.current > maxRetries) {
+        console.log('🛑 Max retries exceeded, closing app due to inactivity');
+        
+        // Different message depending on state
+        let closureMessage = 'I have not detected any activity. The application will now close. Goodbye.';
+        
+        if (currentState === 'listening_repeat' || currentState === 'listening_retry') {
+          closureMessage = 'I have not detected a response. If you would like to search for a route, please restart the application. Goodbye.';
+        }
+        
+        Speech.speak(closureMessage, {
+          language: 'en-GB',
+          rate: 0.9,
+          volume: 1.0,
+          onStart: () => {
+            console.log('🗣️ Speaking inactivity closure message');
+          },
+          onDone: () => {
+            console.log('✅ Closing app due to inactivity');
+            closeApp();
+          },
+        });
+        return;
+      }
+      
+      // First or second attempt - ask again
+      const attemptNumber = retryCount.current;
+      console.log(`🔄 Retry attempt ${attemptNumber} of ${maxRetries}`);
+      
+      Speech.speak('I could not hear you. Please speak when you see the purple icon.', {
+        language: 'en-GB',
+        rate: 0.9,
+        volume: 1.0,
+        onStart: () => {
+          console.log('🗣️ Speaking no-speech error message');
+        },
+        onDone: () => {
+          console.log('✅ No-speech error message done, retrying question');
+          isProcessingError.current = false;
+          
+          // Retry the same question after a short delay
+          setTimeout(() => {
+            if (currentState === 'listening_origin') {
+              askForOrigin();
+            } else if (currentState === 'listening_destination') {
+              askForDestination();
+            } else if (currentState === 'listening_repeat') {
+              askToRepeatResults();
+            } else if (currentState === 'listening_retry') {
+              askToRetry();
+            }
+          }, 500);
+        },
+        onError: (error) => {
+          console.error('❌ Error speaking no-speech message:', error);
+          isProcessingError.current = false;
+        },
+      });
+    } else {
+      // Other errors
+      console.log('⚠️ Other speech error:', event.error);
+      
+      Speech.speak('An error occurred. Let me try again.', {
+        language: 'en-GB',
+        rate: 0.9,
+        volume: 1.0,
+        onStart: () => {
+          console.log('🗣️ Speaking general error message');
+        },
+        onDone: () => {
+          console.log('✅ General error message done, retrying question');
+          isProcessingError.current = false;
+          
+          setTimeout(() => {
+            if (currentState === 'listening_origin') {
+              askForOrigin();
+            } else if (currentState === 'listening_destination') {
+              askForDestination();
+            } else if (currentState === 'listening_repeat') {
+              askToRepeatResults();
+            } else if (currentState === 'listening_retry') {
+              askToRetry();
+            }
+          }, 500);
+        },
+        onError: (error) => {
+          console.error('❌ Error speaking general error message:', error);
+          isProcessingError.current = false;
+        },
+      });
     }
   });
 
 
   const searchJourney = async () => {
-    if (!from.trim() || !to.trim()) {
-      setError('Please enter both origin and destination');
+    console.log('🔎 searchJourney() called');
+    
+    // Use refs for immediate values
+    const fromValue = fromRef.current;
+    const toValue = toRef.current;
+    
+    console.log('📍 Searching from:', fromValue, 'to:', toValue);
+    
+    if (!fromValue.trim() || !toValue.trim()) {
+      console.log('❌ Missing from or to values');
+      setError('Please enter origin and destination');
       setConversationState('error');
       return;
     }
 
     setLoading(true);
     setConversationState('searching');
-    setStatusMessage('Searching for journeys...');
+    setStatusMessage('Searching for routes...');
     setError('');
     setJourneys([]);
 
     try {
-      const firstUrl = `${TFL_API_BASE}/Journey/JourneyResults/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`;
+      const firstUrl = `${TFL_API_BASE}/Journey/JourneyResults/${encodeURIComponent(fromValue)}/to/${encodeURIComponent(toValue)}`;
       console.log('First call:', firstUrl);
 
       const firstResponse = await fetch(firstUrl);
@@ -265,9 +727,18 @@ export default function App() {
         const toId = disambiguationData.toLocationDisambiguation?.disambiguationOptions?.[0]?.parameterValue;
 
         if (!fromId || !toId) {
-          setError('Could not resolve station IDs. Please check station names.');
+          const errorMsg = 'Could not resolve the stations. Please verify the names.';
+          setError(errorMsg);
           setLoading(false);
           setConversationState('error');
+          Speech.speak(errorMsg, {
+            language: 'en-GB',
+            rate: 0.9,
+            volume: 1.0,
+            onDone: () => {
+              askToRetry();
+            },
+          });
           return;
         }
 
@@ -283,7 +754,7 @@ export default function App() {
         const results = data.journeys || [];
         setJourneys(results);
         setConversationState('results');
-        setStatusMessage('Journey found!');
+        setStatusMessage('Route found!');
         speakResults(results);
 
       } else if (firstResponse.ok) {
@@ -291,36 +762,97 @@ export default function App() {
         const results = data.journeys || [];
         setJourneys(results);
         setConversationState('results');
-        setStatusMessage('Journey found!');
+        setStatusMessage('Route found!');
         speakResults(results);
       } else {
         throw new Error(`API error: ${firstResponse.status}`);
       }
 
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error fetching journey');
+      const errorMsg = err instanceof Error ? err.message : 'Error searching for route';
+      setError(errorMsg);
       setConversationState('error');
-      setStatusMessage('Error finding journey');
+      setStatusMessage('Service unavailable');
       console.error('Journey search error:', err);
+      
+      Speech.stop();
+      Speech.speak('The service is currently unavailable. Please try again later. The application will now close. Goodbye.', {
+        language: 'en-GB',
+        rate: 0.9,
+        volume: 1.0,
+        onStart: () => {
+          console.log('🗣️ Speaking service error message');
+        },
+        onDone: () => {
+          console.log('✅ Closing app due to service error');
+          setTimeout(() => {
+            closeApp();
+          }, 1000);
+        },
+        onError: (error) => {
+          console.error('❌ Error speaking service error:', error);
+          closeApp();
+        },
+      });
     } finally {
       setLoading(false);
     }
+  };
+
+  // Ask if user wants to retry after error
+  const askToRetry = () => {
+    setConversationState('asking_retry');
+    setStatusMessage('Asking if you want to try again...');
+    
+    Speech.stop();
+    Speech.speak('Would you like to try again with different locations?', {
+      language: 'en-GB',
+      rate: 0.9,
+      volume: 1.0,
+      onDone: () => {
+        startListeningForRetry();
+      },
+    });
+  };
+
+  const startListeningForRetry = () => {
+    setConversationState('listening_retry');
+    setStatusMessage('Listening for your answer...');
+    
+    // Reset error processing flag
+    isProcessingError.current = false;
+    
+    ExpoSpeechRecognitionModule.start({
+      lang: 'en-GB',
+      interimResults: false,
+      maxAlternatives: 1,
+    });
   };
 
   // Allow user to start a new search
   const startNewSearch = () => {
     setFrom('');
     setTo('');
+    fromRef.current = '';
+    toRef.current = '';
     setJourneys([]);
     setError('');
-    askForOrigin();
+    setConversationState('idle');
+    Speech.speak('Perfect. Let us search for a new route.', {
+      language: 'en-GB',
+      rate: 0.9,
+      volume: 1.0,
+      onDone: () => {
+        askForOrigin();
+      },
+    });
   };
 
   const formatDuration = (minutes: number) => {
-    if (minutes < 60) return `${minutes} minutes`;
+    if (minutes < 60) return `${minutes} minutos`;
     const hours = Math.floor(minutes / 60);
     const mins = minutes % 60;
-    return `${hours} hour${hours > 1 ? 's' : ''} and ${mins} minutes`;
+    return `${hours} hora${hours > 1 ? 's' : ''} y ${mins} minutos`;
   };
 
   const formatDurationShort = (minutes: number) => {
@@ -333,10 +865,12 @@ export default function App() {
   // Get status message based on conversation state
   const getStatusDisplay = () => {
     switch (conversationState) {
+      case 'splash':
+        return '';
       case 'greeting':
-        return '👋 Saying hello...';
+        return '👋 Greeting...';
       case 'asking_origin':
-        return '📍 Asking "Where are you?"';
+        return '📍 Asking "Where are you departing from?"';
       case 'listening_origin':
         return '🎙️ Listening for your location...';
       case 'confirming_origin':
@@ -348,11 +882,19 @@ export default function App() {
       case 'confirming_destination':
         return '✅ Confirming destination';
       case 'searching':
-        return '🔍 Searching for journeys...';
+        return '🔍 Searching for routes...';
       case 'results':
-        return '✅ Journey found!';
+        return '✅ Route found!';
+      case 'asking_repeat':
+        return '🔄 Asking if you want to repeat...';
+      case 'listening_repeat':
+        return '🎙️ Listening for your answer...';
+      case 'asking_retry':
+        return '🔄 Asking if you want to try again...';
+      case 'listening_retry':
+        return '🎙️ Listening for your answer...';
       case 'error':
-        return '❌ Error occurred';
+        return '❌ An error occurred';
       default:
         return statusMessage;
     }
@@ -360,102 +902,127 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      <StatusBar style="auto" />
+      <StatusBar style="light" />
 
-      <View style={styles.header}>
-        <Image
-          source={require('./assets/icon.png')}
-          style={styles.logo}
-          resizeMode="contain"
-        />
-        <Text style={styles.title}>IntuitJourney</Text>
-        <Text style={styles.subtitle}>Voice-first travel assistant</Text>
-      </View>
-
-      {/* Status indicator */}
-      <View style={styles.statusContainer}>
-        <Text style={styles.statusText}>{getStatusDisplay()}</Text>
-      </View>
-
-      {/* Listening indicator */}
-      {isListening && (
-        <View style={styles.listeningBanner}>
-          <Text style={styles.listeningText}>🎙️ Speak now...</Text>
-        </View>
+      {/* Splash Screen */}
+      {conversationState === 'splash' && (
+        <Animated.View style={[styles.splashContainer, { opacity: fadeAnim }]}>
+          <Image
+            source={require('./assets/logo-eye.png')}
+            style={styles.splashLogo}
+            resizeMode="contain"
+          />
+        </Animated.View>
       )}
 
-      {/* Error display */}
-      {error ? (
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={startNewSearch}>
-            <Text style={styles.retryButtonText}>Try Again</Text>
-          </TouchableOpacity>
-        </View>
-      ) : null}
-
-      {/* Journey results - shown visually for accessibility helpers */}
-      <ScrollView style={styles.resultsContainer}>
-        {/* Current input display */}
-        {(from || to) && (
-          <View style={styles.inputDisplay}>
-            {from && (
-              <View style={styles.inputDisplayRow}>
-                <Text style={styles.inputLabel}>From:</Text>
-                <Text style={styles.inputValue}>{from}</Text>
-              </View>
-            )}
-            {to && (
-              <View style={styles.inputDisplayRow}>
-                <Text style={styles.inputLabel}>To:</Text>
-                <Text style={styles.inputValue}>{to}</Text>
-              </View>
-            )}
+      {/* Main App Content */}
+      {conversationState !== 'splash' && (
+        <>
+          <View style={styles.header}>
+            <Image
+              source={require('./assets/logo-eye.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
           </View>
-        )}
 
-        {/* Replay button */}
-        {journeys.length > 0 && (
-          <TouchableOpacity
-            style={styles.replayButton}
-            onPress={() => speakResults(journeys)}
-          >
-            <Text style={styles.replayButtonText}>🔊 Replay Journey</Text>
-          </TouchableOpacity>
-        )}
+          {/* Status indicator */}
+          <View style={styles.statusContainer}>
+            <Text style={styles.statusText}>{getStatusDisplay()}</Text>
+          </View>
 
-        {/* Journey cards */}
-        {journeys.map((journey, idx) => (
-          <View key={idx} style={styles.journeyCard}>
-            <View style={styles.journeyHeader}>
-              <Text style={styles.journeyTitle}>Option {idx + 1}</Text>
-              <Text style={styles.journeyDuration}>
-                {formatDurationShort(journey.duration)}
-              </Text>
+          {/* Listening indicator with animation */}
+          {isListening && (
+            <View style={styles.listeningContainer}>
+              <Animated.View style={[styles.listeningCircle, { transform: [{ scale: pulseAnim }] }]}>
+                <Text style={styles.listeningIcon}>🎙️</Text>
+              </Animated.View>
+              <Text style={styles.listeningTitle}>Listening...</Text>
+              <View style={styles.waveformContainer}>
+                <View style={[styles.wave, styles.wave1]} />
+                <View style={[styles.wave, styles.wave2]} />
+                <View style={[styles.wave, styles.wave3]} />
+                <View style={[styles.wave, styles.wave4]} />
+                <View style={[styles.wave, styles.wave5]} />
+              </View>
+              <Text style={styles.listeningSubtext}>voice assistant</Text>
             </View>
+          )}
 
-            {journey.legs.map((leg, legIdx) => (
-              <View key={legIdx} style={styles.legContainer}>
-                <View style={styles.legHeader}>
-                  <Text style={styles.legMode}>{leg.mode.id.toUpperCase()}</Text>
-                  {leg.routeOptions && leg.routeOptions[0] && (
-                    <Text style={styles.legRoute}>{leg.routeOptions[0].name}</Text>
-                  )}
+          {/* Error display */}
+          {error ? (
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorText}>{error}</Text>
+              <TouchableOpacity style={styles.retryButton} onPress={startNewSearch}>
+                <Text style={styles.retryButtonText}>Intentar de nuevo</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          {/* Journey results */}
+          <ScrollView style={styles.resultsContainer}>
+            {/* Current input display */}
+            {(from || to) && (
+              <View style={styles.inputDisplay}>
+                {from && (
+                  <View style={styles.inputDisplayRow}>
+                    <Text style={styles.inputLabel}>Desde:</Text>
+                    <Text style={styles.inputValue}>{from}</Text>
+                  </View>
+                )}
+                {to && (
+                  <View style={styles.inputDisplayRow}>
+                    <Text style={styles.inputLabel}>Hasta:</Text>
+                    <Text style={styles.inputValue}>{to}</Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* Replay button */}
+            {journeys.length > 0 && (
+              <TouchableOpacity
+                style={styles.replayButton}
+                onPress={() => speakResults(journeys)}
+              >
+                <Text style={styles.replayButtonText}>🔊 Repetir Ruta</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Journey cards */}
+            {journeys.map((journey, idx) => (
+              <View key={idx} style={styles.journeyCard}>
+                <View style={styles.journeyHeader}>
+                  <Text style={styles.journeyTitle}>Opción {idx + 1}</Text>
+                  <Text style={styles.journeyDuration}>
+                    {formatDurationShort(journey.duration)}
+                  </Text>
                 </View>
 
-                <Text style={styles.legInstruction}>{leg.instruction.summary}</Text>
+                {journey.legs.map((leg, legIdx) => (
+                  <View key={legIdx} style={styles.legContainer}>
+                    <View style={styles.legHeader}>
+                      <Text style={styles.legMode}>{leg.mode.id.toUpperCase()}</Text>
+                      {leg.routeOptions && leg.routeOptions[0] && (
+                        <Text style={styles.legRoute}>{leg.routeOptions[0].name}</Text>
+                      )}
+                    </View>
 
-                <View style={styles.legPoints}>
-                  <Text style={styles.pointText}>📍 {leg.departurePoint.commonName}</Text>
-                  <Text style={styles.pointText}>📍 {leg.arrivalPoint.commonName}</Text>
-                </View>
+                    <Text style={styles.legInstruction}>{leg.instruction.summary}</Text>
 
-                <Text style={styles.legDuration}>{formatDurationShort(leg.duration)}</Text>
+                    <View style={styles.legPoints}>
+                      <Text style={styles.pointText}>📍 {leg.departurePoint.commonName}</Text>
+                      <Text style={styles.pointText}>📍 {leg.arrivalPoint.commonName}</Text>
+                    </View>
+
+                    <Text style={styles.legDuration}>{formatDurationShort(leg.duration)}</Text>
+                  </View>
+                ))}
               </View>
             ))}
-          </View>
-        ))}
-      </ScrollView>
+          </ScrollView>
+        </>
+      )}
     </View>
   );
 }
@@ -463,51 +1030,148 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FEFEFE',
-    paddingTop: 50,
+    backgroundColor: '#7B68EE',
   },
+  // Splash Screen
+  splashContainer: {
+    flex: 1,
+    backgroundColor: '#7B68EE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  splashLogo: {
+    width: 350,
+    height: 350,
+    marginBottom: 30,
+  },
+  splashTitle: {
+    fontSize: 48,
+    fontWeight: '300',
+    color: '#FFFFFF',
+    fontStyle: 'italic',
+    marginBottom: 10,
+  },
+  splashSubtitle: {
+    fontSize: 20,
+    color: '#FFD700',
+    fontWeight: '400',
+  },
+  // Header
   header: {
     paddingHorizontal: 20,
     paddingBottom: 20,
-    backgroundColor: '#86C2C4',
-    paddingTop: 20,
+    backgroundColor: '#7B68EE',
+    paddingTop: 60,
     alignItems: 'center',
   },
   logo: {
-    width: 60,
-    height: 60,
-    marginBottom: 10,
+    width: 250,
+    height: 250,
+    marginBottom: 15,
   },
   title: {
     fontSize: 32,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: '300',
+    color: '#FFFFFF',
+    fontStyle: 'italic',
+  },
+  subtitleContainer: {
+    flexDirection: 'row',
+    marginTop: 5,
   },
   subtitle: {
     fontSize: 16,
-    color: '#fff',
-    opacity: 0.9,
-    marginTop: 5,
+    color: '#FFFFFF',
+    fontWeight: '400',
   },
-  // Voice-first status display
+  subtitleBeyond: {
+    fontSize: 16,
+    color: '#FFD700',
+    fontWeight: '400',
+  },
+  // Status display
   statusContainer: {
-    padding: 20,
-    backgroundColor: '#E8F4F5',
-    borderBottomWidth: 1,
-    borderBottomColor: '#D1C3B7',
+    padding: 15,
+    backgroundColor: '#9B88EE',
     alignItems: 'center',
   },
   statusText: {
-    fontSize: 18,
-    color: '#2C3E50',
+    fontSize: 16,
+    color: '#FFFFFF',
     fontWeight: '500',
     textAlign: 'center',
   },
-  // Input display (for visual confirmation)
+  // Listening container (full screen overlay)
+  listeningContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#2D1B69',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  listeningCircle: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: '#5B4EBE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  listeningIcon: {
+    fontSize: 50,
+  },
+  listeningTitle: {
+    fontSize: 32,
+    fontWeight: '300',
+    color: '#9B7FD9',
+    marginBottom: 40,
+  },
+  waveformContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 100,
+    marginBottom: 20,
+  },
+  wave: {
+    width: 8,
+    backgroundColor: '#7B68EE',
+    borderRadius: 4,
+    marginHorizontal: 4,
+  },
+  wave1: {
+    height: 30,
+  },
+  wave2: {
+    height: 60,
+  },
+  wave3: {
+    height: 90,
+  },
+  wave4: {
+    height: 60,
+  },
+  wave5: {
+    height: 30,
+  },
+  listeningSubtext: {
+    fontSize: 16,
+    color: '#7B68EE',
+    fontWeight: '400',
+  },
+  // Input display
   inputDisplay: {
     padding: 15,
-    backgroundColor: '#F8F8F8',
+    backgroundColor: '#FFFFFF',
     marginBottom: 10,
+    marginHorizontal: 15,
+    marginTop: 15,
+    borderRadius: 12,
   },
   inputDisplayRow: {
     flexDirection: 'row',
@@ -516,46 +1180,33 @@ const styles = StyleSheet.create({
   inputLabel: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#666',
-    width: 50,
+    color: '#7B68EE',
+    width: 60,
   },
   inputValue: {
     fontSize: 14,
     color: '#333',
     flex: 1,
   },
-  // Listening indicator
-  listeningBanner: {
-    backgroundColor: '#fff3cd',
-    paddingVertical: 15,
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ffc107',
-  },
-  listeningText: {
-    color: '#856404',
-    fontSize: 16,
-    textAlign: 'center',
-    fontWeight: '500',
-  },
   replayButton: {
-    backgroundColor: '#86C2C4',
-    borderRadius: 8,
-    padding: 12,
+    backgroundColor: '#7B68EE',
+    borderRadius: 25,
+    padding: 15,
     alignItems: 'center',
+    marginHorizontal: 15,
     marginTop: 10,
     marginBottom: 5,
   },
   replayButtonText: {
-    color: '#fff',
-    fontSize: 15,
+    color: '#FFFFFF',
+    fontSize: 16,
     fontWeight: '600',
   },
   errorContainer: {
     margin: 20,
     padding: 15,
-    backgroundColor: '#ffebee',
-    borderRadius: 8,
+    backgroundColor: '#FFE5E5',
+    borderRadius: 12,
     borderLeftWidth: 4,
     borderLeftColor: '#f44336',
   },
@@ -565,93 +1216,96 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   retryButton: {
-    backgroundColor: '#86C2C4',
+    backgroundColor: '#7B68EE',
     paddingVertical: 10,
     paddingHorizontal: 20,
-    borderRadius: 8,
+    borderRadius: 20,
     alignSelf: 'flex-start',
   },
   retryButtonText: {
-    color: '#fff',
+    color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
   },
   resultsContainer: {
     flex: 1,
-    paddingHorizontal: 20,
+    backgroundColor: '#F5F3FF',
   },
   journeyCard: {
-    backgroundColor: '#FEFEFE',
-    borderRadius: 12,
-    padding: 15,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    marginHorizontal: 15,
     marginVertical: 10,
-    shadowColor: '#86C2C4',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowColor: '#7B68EE',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 5,
   },
   journeyHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 15,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#D1C3B7',
+    paddingBottom: 15,
+    borderBottomWidth: 2,
+    borderBottomColor: '#E8E0FF',
   },
   journeyTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
-    color: '#333',
+    color: '#2D1B69',
   },
   journeyDuration: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '600',
-    color: '#86C2C4',
+    color: '#7B68EE',
   },
   legContainer: {
     marginBottom: 15,
     paddingBottom: 15,
     borderBottomWidth: 1,
-    borderBottomColor: '#D1C3B7',
+    borderBottomColor: '#F0EBFF',
   },
   legHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   legMode: {
     fontSize: 12,
     fontWeight: 'bold',
-    backgroundColor: '#86C2C4',
-    color: '#fff',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-    marginRight: 8,
+    backgroundColor: '#7B68EE',
+    color: '#FFFFFF',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    marginRight: 10,
   },
   legRoute: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#333',
+    color: '#2D1B69',
   },
   legInstruction: {
     fontSize: 14,
-    color: '#BAB4AD',
-    marginBottom: 8,
+    color: '#666',
+    marginBottom: 10,
+    lineHeight: 20,
   },
   legPoints: {
-    marginVertical: 5,
+    marginVertical: 8,
   },
   pointText: {
     fontSize: 13,
-    color: '#333',
-    marginVertical: 2,
+    color: '#444',
+    marginVertical: 3,
   },
   legDuration: {
     fontSize: 12,
-    color: '#C0DDEA',
+    color: '#9B88EE',
     fontStyle: 'italic',
+    marginTop: 5,
   },
 });
