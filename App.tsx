@@ -983,7 +983,7 @@ export default function App() {
             <View style={styles.errorContainer}>
               <Text style={styles.errorText}>{error}</Text>
               <TouchableOpacity style={styles.retryButton} onPress={startNewSearch}>
-                <Text style={styles.retryButtonText}>Intentar de nuevo</Text>
+                <Text style={styles.retryButtonText}>Try again</Text>
               </TouchableOpacity>
             </View>
           ) : null}
@@ -995,13 +995,13 @@ export default function App() {
               <View style={styles.inputDisplay}>
                 {from && (
                   <View style={styles.inputDisplayRow}>
-                    <Text style={styles.inputLabel}>Desde:</Text>
+                    <Text style={styles.inputLabel}>From:</Text>
                     <Text style={styles.inputValue}>{from}</Text>
                   </View>
                 )}
                 {to && (
                   <View style={styles.inputDisplayRow}>
-                    <Text style={styles.inputLabel}>Hasta:</Text>
+                    <Text style={styles.inputLabel}>To:</Text>
                     <Text style={styles.inputValue}>{to}</Text>
                   </View>
                 )}
@@ -1014,7 +1014,7 @@ export default function App() {
                 style={styles.replayButton}
                 onPress={() => speakResults(journeys)}
               >
-                <Text style={styles.replayButtonText}>🔊 Repetir Ruta</Text>
+                <Text style={styles.replayButtonText}>🔊 Repeat Route</Text>
               </TouchableOpacity>
             )}
 
@@ -1022,7 +1022,7 @@ export default function App() {
             {journeys.map((journey, idx) => (
               <View key={idx} style={styles.journeyCard}>
                 <View style={styles.journeyHeader}>
-                  <Text style={styles.journeyTitle}>Opción {idx + 1}</Text>
+                  <Text style={styles.journeyTitle}>Option {idx + 1}</Text>
                   <Text style={styles.journeyDuration}>
                     {formatDurationShort(journey.duration)}
                   </Text>
