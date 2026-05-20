@@ -104,25 +104,9 @@ export default function App() {
     toRef.current = to;
   }, [to]);
 
-  // Test audio system and start with splash screen
+  // Start with splash screen
   useEffect(() => {
-    console.log('🔧 App mounted, testing audio system...');
-    
-    // Test if Speech.speak works at all
-    Speech.speak('Test', {
-      language: 'es-ES',
-      volume: 1.0,
-      rate: 0.9,
-      onStart: () => {
-        console.log('✅ Audio system is working!');
-      },
-      onDone: () => {
-        console.log('✅ Audio test complete');
-      },
-      onError: (error) => {
-        console.error('❌ Audio test failed:', error);
-      },
-    });
+    console.log('🔧 App mounted, starting splash screen...');
     
     // Start splash screen immediately
     showSplashScreen();
@@ -250,6 +234,51 @@ export default function App() {
     // or reopen the app to start a new session
   };
 
+  const playListenStartCue = (next: () => void) => {
+    console.log('🔔 Playing start cue before listening');
+    Speech.speak('You can start speaking now.', {
+      language: 'en-GB',
+      rate: 0.9,
+      volume: 1.0,
+      pitch: 1.2,
+      onDone: () => {
+        // First beep - high pitch
+        Speech.speak('Beep', {
+          language: 'en-GB',
+          rate: 2.0, // Much faster to create a "beep" effect
+          pitch: 1.8, // Higher pitch for distinctness
+          volume: 1.0,
+          onDone: () => {
+            // Second beep - rapid succession
+            Speech.speak('Beep', {
+              language: 'en-GB',
+              rate: 2.0,
+              pitch: 1.8,
+              volume: 1.0,
+              onDone: () => {
+                setTimeout(() => {
+                  next();
+                }, 300);
+              },
+              onError: (error) => {
+                console.error('❌ Second beep error:', error);
+                next();
+              },
+            });
+          },
+          onError: (error) => {
+            console.error('❌ First beep error:', error);
+            next();
+          },
+        });
+      },
+      onError: (error) => {
+        console.error('❌ Cue prompt error:', error);
+        next();
+      },
+    });
+  };
+
   const askForOrigin = () => {
     console.log('📍 Asking for origin...');
     setConversationState('asking_origin');
@@ -267,8 +296,8 @@ export default function App() {
         console.log('🗣️ Origin question speech started!');
       },
       onDone: () => {
-        console.log('✅ Origin question speech done, starting to listen');
-        startListeningForOrigin();
+        console.log('✅ Origin question speech done, playing the beep cue');
+        playListenStartCue(startListeningForOrigin);
       },
       onError: (error) => {
         console.error('❌ Origin speech error:', error);
@@ -313,8 +342,8 @@ export default function App() {
         console.log('🗣️ Destination question speech started!');
       },
       onDone: () => {
-        console.log('✅ Destination question speech done, starting to listen');
-        startListeningForDestination();
+        console.log('✅ Destination question speech done, playing the beep cue');
+        playListenStartCue(startListeningForDestination);
       },
       onError: (error) => {
         console.error('❌ Destination speech error:', error);
@@ -626,7 +655,7 @@ export default function App() {
       const attemptNumber = retryCount.current;
       console.log(`🔄 Retry attempt ${attemptNumber} of ${maxRetries}`);
       
-      Speech.speak('I could not hear you. Please speak when you see the purple icon.', {
+      Speech.speak('I could not hear you. Please wait for the beep and then speak.', {
         language: 'en-GB',
         rate: 0.9,
         volume: 1.0,
