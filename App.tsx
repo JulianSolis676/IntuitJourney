@@ -21,22 +21,22 @@ const TFL_API_BASE = 'https://api.tfl.gov.uk';
 
 // Conversation states
 type ConversationState = 
-  | 'splash'                  // Initial splash screen
-  | 'idle'                    // App just opened, not started yet
-  | 'greeting'                // Speaking greeting
-  | 'asking_origin'           // Asking "Where are you?"
-  | 'listening_origin'        // Listening for origin
-  | 'confirming_origin'       // Confirming origin
-  | 'asking_destination'      // Asking "Where do you want to go?"
-  | 'listening_destination'   // Listening for destination
-  | 'confirming_destination'  // Confirming destination
-  | 'searching'               // Searching journey
-  | 'results'                 // Showing results
-  | 'asking_repeat'           // Asking if user wants to repeat results
-  | 'listening_repeat'        // Listening for repeat confirmation
-  | 'asking_retry'            // Asking if user wants to retry after error
-  | 'listening_retry'         // Listening for retry confirmation
-  | 'error';                  // Showing error
+  | 'splash'                      // Initial splash screen
+  | 'idle'                        // App just opened, not started yet
+  | 'greeting'                    // Speaking greeting
+  | 'asking_origin'               // Asking "Where are you?"
+  | 'listening_origin'            // Listening for origin
+  | 'asking_destination'          // Asking "Where do you want to go?"
+  | 'listening_destination'       // Listening for destination
+  | 'confirming_both'             // Confirming both origin and destination together
+  | 'listening_both_confirm'      // Listening for confirmation (yes/no) of both
+  | 'searching'                   // Searching journey
+  | 'results'                     // Showing results
+  | 'asking_repeat'               // Asking if user wants to repeat results
+  | 'listening_repeat'            // Listening for repeat confirmation
+  | 'asking_retry'                // Asking if user wants to retry after error
+  | 'listening_retry'             // Listening for retry confirmation
+  | 'error';                      // Showing error
 
 interface JourneyLeg {
   mode: { id: string };
@@ -374,6 +374,49 @@ export default function App() {
     }
   };
 
+  const confirmBoth = () => {
+    console.log('✅ Confirming both origin and destination:', fromRef.current, 'to', toRef.current);
+    setConversationState('confirming_both');
+    setStatusMessage('Confirming your journey...');
+    
+    Speech.stop();
+    Speech.speak(`Just to confirm, you want to travel from ${fromRef.current} to ${toRef.current}. Is that correct?`, {
+      language: 'en-GB',
+      rate: 0.9,
+      volume: 1.0,
+      onStart: () => {
+        console.log('🗣️ Both confirmation speech started!');
+      },
+      onDone: () => {
+        console.log('✅ Both confirmation question spoken, listening for response');
+        startListeningForBothConfirmation();
+      },
+      onError: (error) => {
+        console.error('❌ Both confirmation speech error:', error);
+      },
+    });
+  };
+
+  const startListeningForBothConfirmation = () => {
+    console.log('👂 Starting to listen for both confirmation...');
+    setConversationState('listening_both_confirm');
+    setStatusMessage('Listening for confirmation...');
+    
+    // Reset error processing flag
+    isProcessingError.current = false;
+    
+    try {
+      ExpoSpeechRecognitionModule.start({
+        lang: 'en-GB',
+        interimResults: false,
+        maxAlternatives: 1,
+      });
+      console.log('✅ Speech recognition started for both confirmation');
+    } catch (error) {
+      console.error('❌ Error starting speech recognition for both confirmation:', error);
+    }
+  };
+
   const confirmAndSearch = () => {
     console.log('🔍 confirmAndSearch() called');
     console.log('📌 From:', from, '| To:', to);
@@ -414,7 +457,7 @@ export default function App() {
       return;
     }
     
-    setConversationState('confirming_destination');
+    setConversationState('confirming_both');
     setStatusMessage('Confirming and searching...');
     
     Speech.stop();
@@ -527,15 +570,18 @@ export default function App() {
       // Use REF for immediate access
       const toValue = toRef.current;
       console.log('📝 To value (ref):', toValue);
-      // Finished listening for destination, search journey
+      // Finished listening for destination, confirm both
       if (toValue && toValue.trim()) {
-        console.log('✅ Destination captured, calling confirmAndSearch()');
+        console.log('✅ Destination captured, confirming both origin and destination');
         retryCount.current = 0; // Reset on success
-        confirmAndSearch();
+        confirmBoth();
       } else {
         console.log('⚠️ No destination value, waiting for error handler');
       }
       // If no input, wait for error handler
+    } else if (currentState === 'listening_both_confirm') {
+      console.log('✅ Finished listening for both confirmation, processing in result event');
+      // Confirmation answer handled in result event
     } else if (currentState === 'listening_repeat') {
       console.log('🔄 Finished listening for repeat answer');
       // User responded to repeat question - handled in result event
@@ -565,6 +611,30 @@ export default function App() {
       retryCount.current = 0;
       setTo(transcript);
       toRef.current = transcript; // Update ref immediately
+    } else if (currentState === 'listening_both_confirm') {
+      // Reset retry count on successful speech capture
+      retryCount.current = 0;
+      // Check if user confirms both origin and destination
+      const response = transcript.toLowerCase();
+      if (response.includes('yes') || response.includes('yeah') || response.includes('sure') || response.includes('ok') || response.includes('correct') || response.includes('right')) {
+        console.log('✅ Both confirmed, proceeding to search');
+        confirmAndSearch();
+      } else {
+        console.log('❌ Data rejected, asking again');
+        Speech.stop();
+        Speech.speak('No problem. Let me ask you again. Where would you like to depart from?', {
+          language: 'en-GB',
+          rate: 0.9,
+          volume: 1.0,
+          onDone: () => {
+            setFrom('');
+            setTo('');
+            fromRef.current = '';
+            toRef.current = '';
+            playListenStartCue(startListeningForOrigin);
+          },
+        });
+      }
     } else if (currentState === 'listening_repeat') {
       // Reset retry count on successful speech capture
       retryCount.current = 0;
@@ -675,6 +745,8 @@ export default function App() {
               askForOrigin();
             } else if (currentState === 'listening_destination') {
               askForDestination();
+            } else if (currentState === 'listening_both_confirm') {
+              confirmBoth();
             } else if (currentState === 'listening_repeat') {
               askToRepeatResults();
             } else if (currentState === 'listening_retry') {
@@ -707,6 +779,8 @@ export default function App() {
               askForOrigin();
             } else if (currentState === 'listening_destination') {
               askForDestination();
+            } else if (currentState === 'listening_both_confirm') {
+              confirmBoth();
             } else if (currentState === 'listening_repeat') {
               askToRepeatResults();
             } else if (currentState === 'listening_retry') {
@@ -1034,14 +1108,14 @@ export default function App() {
         return '📍 Asking "Where are you departing from?"';
       case 'listening_origin':
         return '🎙️ Listening for your location...';
-      case 'confirming_origin':
-        return '✅ Confirming your location';
       case 'asking_destination':
         return '📍 Asking "Where do you want to go?"';
       case 'listening_destination':
         return '🎙️ Listening for your destination...';
-      case 'confirming_destination':
-        return '✅ Confirming destination';
+      case 'confirming_both':
+        return '✅ Confirming your journey details';
+      case 'listening_both_confirm':
+        return '🎙️ Listening for confirmation (Yes or No)...';
       case 'searching':
         return '🔍 Searching for routes...';
       case 'results':
