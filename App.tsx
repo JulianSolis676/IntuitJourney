@@ -16,6 +16,10 @@ import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
+import {
+  saveToLocalCache,
+  getFromLocalCache,
+} from './src/services/cacheService';
 
 const TFL_API_BASE = 'https://api.tfl.gov.uk';
 
@@ -65,6 +69,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [journeys, setJourneys] = useState<Journey[]>([]);
   const [error, setError] = useState('');
+  const [isCachedData, setIsCachedData] = useState(false);
+  const [cachedDataTimestamp, setCachedDataTimestamp] = useState<number | null>(null);
 
   // Voice-first conversation state
   const [conversationState, setConversationState] = useState<ConversationState>('splash');
@@ -488,12 +494,19 @@ export default function App() {
       });
       return;
     }
+    
     const journey = journeyList[0];
     let text = `I found ${journeyList.length} travel ${journeyList.length > 1 ? 'options' : 'option'}. `;
     text += `The best option takes ${formatDuration(journey.duration)}. `;
     journey.legs.forEach((leg) => {
       text += `${leg.instruction.summary}. `;
     });
+    
+    // Add cache disclaimer if data is from cache
+    if (isCachedData) {
+      text += ' Remember, this information may be outdated.';
+    }
+    
     Speech.speak(text, { 
       language: 'en-GB',
       rate: 0.9,
@@ -799,6 +812,7 @@ export default function App() {
 
   const searchJourney = async () => {
     console.log('🔎 searchJourney() called');
+    console.log('📚 Using resilient cache strategy with fallback');
     
     // Use refs for immediate values
     const fromValue = fromRef.current;
@@ -833,14 +847,12 @@ export default function App() {
           rate: 0.9,
           volume: 1.0,
           onDone: () => {
-            // Reset inputs and ask again
             setFrom('');
             setTo('');
             playListenStartCue(startListeningForOrigin);
           },
         });
       } else {
-        // Max retries reached
         Speech.stop();
         Speech.speak('Unable to find valid routes after three attempts. Closing application. Goodbye.', {
           language: 'en-GB',
@@ -859,178 +871,199 @@ export default function App() {
     setStatusMessage('Searching for routes...');
     setError('');
     setJourneys([]);
+    setIsCachedData(false);
 
     try {
+      // 🔄 STEP 1: Always try TfL API first
+      console.log('🔄 Step 1: Attempting TfL API...');
+      
       const firstUrl = `${TFL_API_BASE}/Journey/JourneyResults/${encodeURIComponent(fromValue)}/to/${encodeURIComponent(toValue)}`;
       console.log('First call:', firstUrl);
 
-      const firstResponse = await fetch(firstUrl);
+      let apiResults: Journey[] | null = null;
+      let apiSuccess = false;
+      let apiRequestFailed = false; // Tracks if API call failed (network error/timeout)
+      let apiResponseEmpty = false; // Tracks if API responded with 200 but no routes
 
-      if (firstResponse.status === 300) {
-        const disambiguationData = await firstResponse.json();
-        console.log('Got 300 response, extracting IDs...');
+      try {
+        const firstResponse = await fetch(firstUrl);
 
-        const fromId = disambiguationData.fromLocationDisambiguation?.disambiguationOptions?.[0]?.parameterValue;
-        const toId = disambiguationData.toLocationDisambiguation?.disambiguationOptions?.[0]?.parameterValue;
+        if (firstResponse.status === 300) {
+          // Handle disambiguation
+          const disambiguationData = await firstResponse.json();
+          console.log('Got 300 response, extracting IDs...');
 
-        if (!fromId || !toId) {
-          const errorMsg = 'Could not resolve the stations. Please verify the names.';
-          setError(errorMsg);
+          const fromId = disambiguationData.fromLocationDisambiguation?.disambiguationOptions?.[0]?.parameterValue;
+          const toId = disambiguationData.toLocationDisambiguation?.disambiguationOptions?.[0]?.parameterValue;
+
+          if (!fromId || !toId) {
+            console.log('⚠️ Could not resolve stations from disambiguation');
+            throw new Error('Could not resolve stations');
+          }
+
+          console.log('Resolved IDs:', fromId, toId);
+
+          const secondUrl = `${TFL_API_BASE}/Journey/JourneyResults/${fromId}/to/${toId}`;
+          console.log('Second call:', secondUrl);
+
+          const secondResponse = await fetch(secondUrl);
+          if (!secondResponse.ok) {
+            console.log(`⚠️ API returned status ${secondResponse.status}`);
+            throw new Error(`API error: ${secondResponse.status}`);
+          }
+
+          const data: JourneyResponse = await secondResponse.json();
+          apiResults = data.journeys || [];
+
+        } else if (firstResponse.ok) {
+          const data: JourneyResponse = await firstResponse.json();
+          apiResults = data.journeys || [];
+
+        } else {
+          console.log(`⚠️ API returned status ${firstResponse.status}`);
+          throw new Error(`API error: ${firstResponse.status}`);
+        }
+
+        // Check if we got valid results from API
+        if (apiResults && apiResults.length > 0) {
+          apiSuccess = true;
+          console.log(`✅ API successful: Found ${apiResults.length} routes`);
+        } else {
+          // API responded (200) but no routes - valid response meaning route doesn't exist
+          console.log('ℹ️ API responded successfully but no routes found (route may not exist)');
+          apiResponseEmpty = true;
+        }
+
+      } catch (apiError) {
+        console.log('❌ API failed:', apiError);
+        apiRequestFailed = true; // Real error - should try cache
+      }
+
+      // 💾 STEP 2: Handle successful API response (has data)
+      if (apiSuccess && apiResults) {
+        console.log('💾 Step 2: Saving to local cache...');
+        
+        // Save to local cache
+        await saveToLocalCache(fromValue, toValue, apiResults);
+        
+        // Reset retry counter
+        journeySearchRetries.current = 0;
+        
+        // Show fresh results (from TfL API)
+        setJourneys(apiResults);
+        setIsCachedData(false); // Mark as fresh data from API
+        setCachedDataTimestamp(null);
+        setConversationState('results');
+        setStatusMessage('Route found!');
+        setLoading(false);
+        
+        console.log('🎉 Showing fresh API results');
+        speakResults(apiResults);
+        return;
+      }
+
+      // 🔴 STEP 3: API request failed (network error), try cache
+      if (apiRequestFailed) {
+        console.log('🔴 API request failed (network/timeout), trying cache fallback...');
+        
+        const cachedData = await getFromLocalCache(fromValue, toValue);
+
+        if (cachedData && cachedData.journeys && cachedData.journeys.length > 0) {
+          console.log(`✅ Cache hit! Found ${cachedData.journeys.length} cached routes`);
+          
+          // Show cached results with outdated message
+          setJourneys(cachedData.journeys);
+          setIsCachedData(true);
+          setCachedDataTimestamp(cachedData.timestamp);
+          setConversationState('results');
+          setStatusMessage('Route found (from cache)!');
           setLoading(false);
-          setConversationState('error');
-          Speech.speak(errorMsg, {
-            language: 'en-GB',
-            rate: 0.9,
-            volume: 1.0,
-            onDone: () => {
-              askToRetry();
-            },
-          });
-          return;
-        }
-
-        console.log('Resolved IDs:', fromId, toId);
-
-        const secondUrl = `${TFL_API_BASE}/Journey/JourneyResults/${fromId}/to/${toId}`;
-        console.log('Second call:', secondUrl);
-
-        const secondResponse = await fetch(secondUrl);
-        if (!secondResponse.ok) throw new Error(`API error: ${secondResponse.status}`);
-
-        const data: JourneyResponse = await secondResponse.json();
-        const results = data.journeys || [];
-        
-        // Handle no routes found
-        if (results.length === 0) {
-          console.log('⚠️ No routes found');
-          journeySearchRetries.current++;
+          journeySearchRetries.current = 0;
           
-          if (journeySearchRetries.current < maxJourneySearchRetries) {
-            const errorMsg = `No routes found for ${fromValue} to ${toValue}. Try again. Attempt ${journeySearchRetries.current} of ${maxJourneySearchRetries}.`;
-            setError(errorMsg);
-            setConversationState('asking_origin');
-            setStatusMessage('Asking for departure location...');
-            setLoading(false);
-            
-            Speech.stop();
-            Speech.speak(`No routes found for ${fromValue} to ${toValue}. Please say your departure location again.`, {
-              language: 'en-GB',
-              rate: 0.9,
-              volume: 1.0,
-              onDone: () => {
-                // Reset inputs and ask again
-                setFrom('');
-                setTo('');
-                playListenStartCue(startListeningForOrigin);
-              },
-            });
-          } else {
-            // Max retries reached
-            setLoading(false);
-            Speech.stop();
-            Speech.speak('Unable to find valid routes after three attempts. Closing application. Goodbye.', {
-              language: 'en-GB',
-              rate: 0.9,
-              volume: 1.0,
-              onDone: () => {
-                closeApp();
-              },
-            });
-          }
-          return;
-        }
-        
-        // Success: routes found
-        journeySearchRetries.current = 0; // Reset retry counter
-        setJourneys(results);
-        setConversationState('results');
-        setStatusMessage('Route found!');
-        setLoading(false);
-        speakResults(results);
-
-      } else if (firstResponse.ok) {
-        const data: JourneyResponse = await firstResponse.json();
-        const results = data.journeys || [];
-        
-        // Handle no routes found
-        if (results.length === 0) {
-          console.log('⚠️ No routes found');
-          journeySearchRetries.current++;
+          // Speak special message for cached data
+          Speech.stop();
+          const timeSinceCache = Date.now() - cachedData.timestamp;
+          const hoursAgo = Math.floor(timeSinceCache / (1000 * 60 * 60));
           
-          if (journeySearchRetries.current < maxJourneySearchRetries) {
-            const errorMsg = `No routes found for ${fromValue} to ${toValue}. Try again. Attempt ${journeySearchRetries.current} of ${maxJourneySearchRetries}.`;
-            setError(errorMsg);
-            setConversationState('asking_origin');
-            setStatusMessage('Asking for departure location...');
-            setLoading(false);
-            
-            Speech.stop();
-            Speech.speak(`No routes found for ${fromValue} to ${toValue}. Please say your departure location again.`, {
+          Speech.speak(
+            `I couldn't reach the live service, but I found your previous search from ${hoursAgo} hours ago. The routes I'm showing may not reflect current service changes. Please note this information might be outdated.`,
+            {
               language: 'en-GB',
               rate: 0.9,
               volume: 1.0,
               onDone: () => {
-                // Reset inputs and ask again
-                setFrom('');
-                setTo('');
-                playListenStartCue(startListeningForOrigin);
+                console.log('✅ Cache message spoken, showing results');
+                speakResults(cachedData.journeys);
               },
-            });
-          } else {
-            // Max retries reached
-            setLoading(false);
-            Speech.stop();
-            Speech.speak('Unable to find valid routes after three attempts. Closing application. Goodbye.', {
-              language: 'en-GB',
-              rate: 0.9,
-              volume: 1.0,
-              onDone: () => {
-                closeApp();
-              },
-            });
-          }
+            }
+          );
           return;
         }
-        
-        // Success: routes found
-        journeySearchRetries.current = 0; // Reset retry counter
-        setJourneys(results);
-        setConversationState('results');
-        setStatusMessage('Route found!');
-        setLoading(false);
-        speakResults(results);
+      }
+
+      // 🛑 STEP 4: No valid response from API (either error or empty response) - show error
+      if (apiResponseEmpty) {
+        console.log('🛑 API responded but no routes found - route does not exist');
+      } else if (!apiRequestFailed) {
+        console.log('🛑 Unexpected state - no routes found');
       } else {
-        throw new Error(`API error: ${firstResponse.status}`);
+        console.log('🛑 No API results and no cache available');
+      }
+
+      journeySearchRetries.current++;
+
+      if (journeySearchRetries.current < maxJourneySearchRetries) {
+        const errorMsg = `No routes found for ${fromValue} to ${toValue}. Try again. Attempt ${journeySearchRetries.current} of ${maxJourneySearchRetries}.`;
+        setError(errorMsg);
+        setConversationState('asking_origin');
+        setStatusMessage('Asking for departure location...');
+        setLoading(false);
+
+        Speech.stop();
+        Speech.speak(`No routes found for ${fromValue} to ${toValue}. Please say your departure location again.`, {
+          language: 'en-GB',
+          rate: 0.9,
+          volume: 1.0,
+          onDone: () => {
+            setFrom('');
+            setTo('');
+            playListenStartCue(startListeningForOrigin);
+          },
+        });
+      } else {
+        setLoading(false);
+        Speech.stop();
+        Speech.speak('Unable to find valid routes after three attempts. Closing application. Goodbye.', {
+          language: 'en-GB',
+          rate: 0.9,
+          volume: 1.0,
+          onDone: () => {
+            closeApp();
+          },
+        });
       }
 
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Error searching for route';
+      console.error('❌ Critical error in searchJourney:', err);
       setError(errorMsg);
       setConversationState('error');
       setStatusMessage('Service unavailable');
-      console.error('Journey search error:', err);
-      
+      setLoading(false);
+
       Speech.stop();
-      Speech.speak('The service is currently unavailable. Please try again later. The application will now close. Goodbye.', {
+      Speech.speak('An unexpected error occurred. The application will now close. Goodbye.', {
         language: 'en-GB',
         rate: 0.9,
         volume: 1.0,
-        onStart: () => {
-          console.log('🗣️ Speaking service error message');
-        },
         onDone: () => {
-          console.log('✅ Closing app due to service error');
-          setTimeout(() => {
-            closeApp();
-          }, 1000);
+          closeApp();
         },
         onError: (error) => {
-          console.error('❌ Error speaking service error:', error);
+          console.error('❌ Error speaking error message:', error);
           closeApp();
         },
       });
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -1072,6 +1105,8 @@ export default function App() {
     toRef.current = '';
     setJourneys([]);
     setError('');
+    setIsCachedData(false);
+    setCachedDataTimestamp(null);
     setConversationState('idle');
     Speech.speak('Perfect. Let us search for a new route.', {
       language: 'en-GB',
