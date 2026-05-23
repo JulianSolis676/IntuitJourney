@@ -82,6 +82,8 @@ export default function App() {
   const isProcessingError = useRef(false);
   const retryCount = useRef(0);
   const maxRetries = 2; // Max 2 attempts before offering to restart
+  const journeySearchRetries = useRef(0);
+  const maxJourneySearchRetries = 3; // Max 3 journey search attempts
   
   // Animation for splash and listening
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -225,6 +227,7 @@ export default function App() {
     fromRef.current = '';
     toRef.current = '';
     retryCount.current = 0;
+    journeySearchRetries.current = 0; // Reset journey search retries
     isProcessingError.current = false;
     setJourneys([]);
     setIsListening(false);
@@ -736,6 +739,47 @@ export default function App() {
       return;
     }
 
+    // Check if departure and arrival are the same
+    const fromNormalized = fromValue.trim().toLowerCase();
+    const toNormalized = toValue.trim().toLowerCase();
+    
+    if (fromNormalized === toNormalized) {
+      console.log('⚠️ Departure and arrival are the same');
+      journeySearchRetries.current++;
+      
+      if (journeySearchRetries.current < maxJourneySearchRetries) {
+        const errorMsg = `You cannot have the same departure and arrival location. Try again. Attempt ${journeySearchRetries.current} of ${maxJourneySearchRetries}.`;
+        setError(errorMsg);
+        setConversationState('asking_origin');
+        setStatusMessage('Asking for departure location...');
+        
+        Speech.stop();
+        Speech.speak('You cannot have the same departure and arrival location. Please say your departure location again.', {
+          language: 'en-GB',
+          rate: 0.9,
+          volume: 1.0,
+          onDone: () => {
+            // Reset inputs and ask again
+            setFrom('');
+            setTo('');
+            playListenStartCue(startListeningForOrigin);
+          },
+        });
+      } else {
+        // Max retries reached
+        Speech.stop();
+        Speech.speak('Unable to find valid routes after three attempts. Closing application. Goodbye.', {
+          language: 'en-GB',
+          rate: 0.9,
+          volume: 1.0,
+          onDone: () => {
+            closeApp();
+          },
+        });
+      }
+      return;
+    }
+
     setLoading(true);
     setConversationState('searching');
     setStatusMessage('Searching for routes...');
@@ -781,17 +825,105 @@ export default function App() {
 
         const data: JourneyResponse = await secondResponse.json();
         const results = data.journeys || [];
+        
+        // Handle no routes found
+        if (results.length === 0) {
+          console.log('⚠️ No routes found');
+          journeySearchRetries.current++;
+          
+          if (journeySearchRetries.current < maxJourneySearchRetries) {
+            const errorMsg = `No routes found for ${fromValue} to ${toValue}. Try again. Attempt ${journeySearchRetries.current} of ${maxJourneySearchRetries}.`;
+            setError(errorMsg);
+            setConversationState('asking_origin');
+            setStatusMessage('Asking for departure location...');
+            setLoading(false);
+            
+            Speech.stop();
+            Speech.speak(`No routes found for ${fromValue} to ${toValue}. Please say your departure location again.`, {
+              language: 'en-GB',
+              rate: 0.9,
+              volume: 1.0,
+              onDone: () => {
+                // Reset inputs and ask again
+                setFrom('');
+                setTo('');
+                playListenStartCue(startListeningForOrigin);
+              },
+            });
+          } else {
+            // Max retries reached
+            setLoading(false);
+            Speech.stop();
+            Speech.speak('Unable to find valid routes after three attempts. Closing application. Goodbye.', {
+              language: 'en-GB',
+              rate: 0.9,
+              volume: 1.0,
+              onDone: () => {
+                closeApp();
+              },
+            });
+          }
+          return;
+        }
+        
+        // Success: routes found
+        journeySearchRetries.current = 0; // Reset retry counter
         setJourneys(results);
         setConversationState('results');
         setStatusMessage('Route found!');
+        setLoading(false);
         speakResults(results);
 
       } else if (firstResponse.ok) {
         const data: JourneyResponse = await firstResponse.json();
         const results = data.journeys || [];
+        
+        // Handle no routes found
+        if (results.length === 0) {
+          console.log('⚠️ No routes found');
+          journeySearchRetries.current++;
+          
+          if (journeySearchRetries.current < maxJourneySearchRetries) {
+            const errorMsg = `No routes found for ${fromValue} to ${toValue}. Try again. Attempt ${journeySearchRetries.current} of ${maxJourneySearchRetries}.`;
+            setError(errorMsg);
+            setConversationState('asking_origin');
+            setStatusMessage('Asking for departure location...');
+            setLoading(false);
+            
+            Speech.stop();
+            Speech.speak(`No routes found for ${fromValue} to ${toValue}. Please say your departure location again.`, {
+              language: 'en-GB',
+              rate: 0.9,
+              volume: 1.0,
+              onDone: () => {
+                // Reset inputs and ask again
+                setFrom('');
+                setTo('');
+                playListenStartCue(startListeningForOrigin);
+              },
+            });
+          } else {
+            // Max retries reached
+            setLoading(false);
+            Speech.stop();
+            Speech.speak('Unable to find valid routes after three attempts. Closing application. Goodbye.', {
+              language: 'en-GB',
+              rate: 0.9,
+              volume: 1.0,
+              onDone: () => {
+                closeApp();
+              },
+            });
+          }
+          return;
+        }
+        
+        // Success: routes found
+        journeySearchRetries.current = 0; // Reset retry counter
         setJourneys(results);
         setConversationState('results');
         setStatusMessage('Route found!');
+        setLoading(false);
         speakResults(results);
       } else {
         throw new Error(`API error: ${firstResponse.status}`);
