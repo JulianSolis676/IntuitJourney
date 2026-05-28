@@ -39,3 +39,9 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# local-only documentation notes
+CONFIGURACION_IPHONE.md
+DEBUGGING_VOICE.md
+INSTRUCCIONES_IOS.md
+VOICE_CONFIRMATION_FEATURE.md
