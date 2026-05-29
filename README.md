@@ -31,6 +31,7 @@ This repository is the working codebase used for the dissertation delivery. The 
 
 ## Tech Stack
 
+<<<<<<< HEAD
 - Expo SDK 54
 - React Native 0.81
 - TypeScript
@@ -180,3 +181,7 @@ This repo currently contains:
 - Proactive notifications for route disruptions.
 - Manual language and voice configuration.
 - Stronger automated test coverage for the journey flow and cache service.
+=======
+- **Mobile App:** React Native (single codebase for iOS with the potential to be extended to Android in the future)
+- **Transit Data:** Transport for London Open Data APIs
+>>>>>>> 366a42e96215f8493e77c435b2aaee80ab4da291
