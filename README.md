@@ -45,7 +45,5 @@ A working MVP is planned with an 8–12 week development window.
 
 ## Tech Stack
 
-- **Mobile App:** React Native (single codebase for iOS and Android)
-- **Backend:** Python (FastAPI)
-- **Speech Services:** Microsoft Azure Cognitive Services (Speech-to-Text and Text-to-Speech)
+- **Mobile App:** React Native (single codebase for iOS with the potential to be extended to Android in the future)
 - **Transit Data:** Transport for London Open Data APIs
